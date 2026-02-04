@@ -257,6 +257,62 @@ function getCountryName(countryCode) {
   return countries[countryCode] || countryCode;
 }
 
+// Fonction de fallback avec ip-api.com
+function tryFallbackAPI(ip, resolve) {
+  console.log(`[Country] 🔄 Trying fallback API (ip-api.com) for IP: ${ip}`);
+  
+  const url = `http://ip-api.com/json/${ip}?fields=status,country,countryCode`;
+  console.log(`[Country] 🌐 Fallback API URL: ${url}`);
+  
+  // Utiliser http pour ip-api.com (pas https sur le plan gratuit)
+  const http = require('http');
+  const request = http.get(url, (res) => {
+    let data = '';
+    
+    console.log(`[Country] 📡 Fallback API Response status: ${res.statusCode}`);
+    
+    if (res.statusCode !== 200) {
+      console.log(`[Country] ⚠️  Fallback API returned status ${res.statusCode}, returning Unknown`);
+      resolve('Unknown');
+      return;
+    }
+    
+    res.on('data', (chunk) => {
+      data += chunk;
+    });
+    
+    res.on('end', () => {
+      try {
+        console.log(`[Country] 📦 Fallback API Response data:`, data);
+        const result = JSON.parse(data);
+        console.log(`[Country] 📊 Fallback API Parsed result:`, JSON.stringify(result, null, 2));
+        
+        if (result.status === 'success' && result.country) {
+          console.log(`[Country] ✅ Fallback API Success! Country: ${result.country}`);
+          resolve(result.country);
+        } else {
+          console.log(`[Country] ⚠️  Fallback API failed, returning Unknown`);
+          resolve('Unknown');
+        }
+      } catch (error) {
+        console.error(`[Country] ❌ Error parsing fallback API data:`, error);
+        resolve('Unknown');
+      }
+    });
+  });
+  
+  request.on('error', (error) => {
+    console.error(`[Country] ❌ Fallback API Error:`, error.message);
+    resolve('Unknown');
+  });
+  
+  request.setTimeout(5000, () => {
+    console.error(`[Country] ⏱️  Fallback API Timeout for IP: ${ip}`);
+    request.destroy();
+    resolve('Unknown');
+  });
+}
+
 // Gestion des connexions WebSocket
 wss.on('connection', async (ws, req) => {
   const clientId = generateClientId();
