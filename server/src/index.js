@@ -139,7 +139,7 @@ function getClientIP(req) {
   return ip || 'unknown';
 }
 
-// Fonction pour obtenir le pays à partir de l'IP avec plusieurs APIs en fallback
+// Fonction pour obtenir le pays à partir de l'IP avec ipinfo.io en priorité
 function getCountryFromIP(ip) {
   return new Promise((resolve) => {
     console.log(`[Country] 🔍 Fetching country for IP: ${ip}`);
@@ -151,20 +151,14 @@ function getCountryFromIP(ip) {
       return;
     }
 
-    // Essayer d'abord avec ip-api.com
-    const url1 = `https://ip-api.com/json/${ip}?fields=status,country,countryCode`;
-    console.log(`[Country] 🌐 Trying API 1 (ip-api.com): ${url1}`);
+    // Essayer d'abord avec ipinfo.io (API prioritaire)
+    const url1 = `https://ipinfo.io/${ip}/json`;
+    console.log(`[Country] 🌐 Trying API 1 (ipinfo.io): ${url1}`);
     
-    const options1 = {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    };
-    
-    const request1 = https.get(url1, options1, (res) => {
+    const request1 = https.get(url1, (res) => {
       let data = '';
       
-      console.log(`[Country] 📡 API 1 Response status: ${res.statusCode}`);
+      console.log(`[Country] 📡 API 1 (ipinfo.io) Response status: ${res.statusCode}`);
       
       if (res.statusCode === 403 || res.statusCode === 429) {
         console.log(`[Country] ⚠️  API 1 returned status ${res.statusCode} (rate limited/forbidden), trying fallback...`);
@@ -184,18 +178,20 @@ function getCountryFromIP(ip) {
       
       res.on('end', () => {
         try {
-          console.log(`[Country] 📦 API 1 Response data:`, data);
+          console.log(`[Country] 📦 API 1 (ipinfo.io) Response data:`, data);
           const result = JSON.parse(data);
           console.log(`[Country] 📊 API 1 Parsed result:`, JSON.stringify(result, null, 2));
           
-          if (result.status === 'success' && result.country) {
-            console.log(`[Country] ✅ API 1 Success! Country: ${result.country}`);
-            resolve(result.country);
-          } else if (result.status === 'fail') {
-            console.log(`[Country] ⚠️  API 1 returned status: ${result.status}, message: ${result.message || 'N/A'}, trying fallback...`);
+          if (result.country) {
+            // Convertir le code pays en nom complet
+            const countryName = getCountryName(result.country);
+            console.log(`[Country] ✅ API 1 (ipinfo.io) Success! Country: ${countryName} (${result.country})`);
+            resolve(countryName);
+          } else if (result.error) {
+            console.log(`[Country] ⚠️  API 1 returned error: ${result.error}, trying fallback...`);
             tryFallbackAPI(ip, resolve);
           } else {
-            console.log(`[Country] ⚠️  API 1 returned status: ${result.status}, trying fallback...`);
+            console.log(`[Country] ⚠️  API 1 no country found, trying fallback...`);
             tryFallbackAPI(ip, resolve);
           }
         } catch (error) {
@@ -207,7 +203,7 @@ function getCountryFromIP(ip) {
     });
     
     request1.on('error', (error) => {
-      console.error(`[Country] ❌ API 1 Error:`, error.message);
+      console.error(`[Country] ❌ API 1 (ipinfo.io) Error:`, error.message);
       tryFallbackAPI(ip, resolve);
     });
     
@@ -220,122 +216,35 @@ function getCountryFromIP(ip) {
   });
 }
 
-// Fonction de fallback avec ipapi.co
-function tryFallbackAPI(ip, resolve) {
-  console.log(`[Country] 🔄 Trying fallback API 1 (ipapi.co) for IP: ${ip}`);
-  
-  const url2 = `https://ipapi.co/${ip}/json/`;
-  console.log(`[Country] 🌐 Fallback API 1 URL: ${url2}`);
-  
-  const request2 = https.get(url2, (res) => {
-    let data = '';
-    
-    console.log(`[Country] 📡 Fallback API 1 Response status: ${res.statusCode}`);
-    
-    res.on('data', (chunk) => {
-      data += chunk;
-    });
-    
-    res.on('end', () => {
-      try {
-        console.log(`[Country] 📦 Fallback API 1 Response data:`, data);
-        const result = JSON.parse(data);
-        console.log(`[Country] 📊 Fallback API 1 Parsed result:`, JSON.stringify(result, null, 2));
-        
-        // Vérifier si c'est une erreur de rate limit
-        if (result.error && (result.reason === 'RateLimited' || res.statusCode === 429)) {
-          console.log(`[Country] ⚠️  Fallback API 1 rate limited, trying API 2...`);
-          tryFallbackAPI2(ip, resolve);
-          return;
-        }
-        
-        if (result.country_name && !result.error) {
-          console.log(`[Country] ✅ Fallback API 1 Success! Country: ${result.country_name}`);
-          resolve(result.country_name);
-        } else if (result.country && !result.error) {
-          console.log(`[Country] ✅ Fallback API 1 Success! Country: ${result.country}`);
-          resolve(result.country);
-        } else {
-          console.log(`[Country] ⚠️  Fallback API 1 error: ${result.error || 'Unknown error'}, trying API 2...`);
-          tryFallbackAPI2(ip, resolve);
-        }
-      } catch (error) {
-        console.error(`[Country] ❌ Error parsing fallback API 1 data:`, error);
-        console.error(`[Country] Raw data:`, data);
-        tryFallbackAPI2(ip, resolve);
-      }
-    });
-  });
-  
-  request2.on('error', (error) => {
-    console.error(`[Country] ❌ Fallback API 1 Error:`, error.message);
-    tryFallbackAPI2(ip, resolve);
-  });
-  
-  // Timeout de 5 secondes pour le fallback
-  request2.setTimeout(5000, () => {
-    console.error(`[Country] ⏱️  Fallback API 1 Timeout after 5 seconds for IP: ${ip}`);
-    request2.destroy();
-    tryFallbackAPI2(ip, resolve);
-  });
-}
-
-// Fonction de fallback 2 avec ip-api.io
-function tryFallbackAPI2(ip, resolve) {
-  console.log(`[Country] 🔄 Trying fallback API 2 (ip-api.io) for IP: ${ip}`);
-  
-  const url3 = `https://ip-api.io/json/${ip}`;
-  console.log(`[Country] 🌐 Fallback API 2 URL: ${url3}`);
-  
-  const request3 = https.get(url3, (res) => {
-    let data = '';
-    
-    console.log(`[Country] 📡 Fallback API 2 Response status: ${res.statusCode}`);
-    
-    res.on('data', (chunk) => {
-      data += chunk;
-    });
-    
-    res.on('end', () => {
-      try {
-        console.log(`[Country] 📦 Fallback API 2 Response data:`, data);
-        const result = JSON.parse(data);
-        console.log(`[Country] 📊 Fallback API 2 Parsed result:`, JSON.stringify(result, null, 2));
-        
-        if (result.country_name && !result.error) {
-          console.log(`[Country] ✅ Fallback API 2 Success! Country: ${result.country_name}`);
-          resolve(result.country_name);
-        } else if (result.country && !result.error) {
-          console.log(`[Country] ✅ Fallback API 2 Success! Country: ${result.country}`);
-          resolve(result.country);
-        } else {
-          console.log(`[Country] ⚠️  Fallback API 2 error: ${result.error || 'Unknown error'}`);
-          console.log(`[Country] ⚠️  Returning 'Unknown' for IP: ${ip}`);
-          resolve('Unknown');
-        }
-      } catch (error) {
-        console.error(`[Country] ❌ Error parsing fallback API 2 data:`, error);
-        console.error(`[Country] Raw data:`, data);
-        console.log(`[Country] ⚠️  Returning 'Unknown' for IP: ${ip}`);
-        resolve('Unknown');
-      }
-    });
-  });
-  
-  request3.on('error', (error) => {
-    console.error(`[Country] ❌ Fallback API 2 Error:`, error.message);
-    console.log(`[Country] ⚠️  Returning 'Unknown' for IP: ${ip}`);
-    resolve('Unknown');
-  });
-  
-  // Timeout de 5 secondes pour le fallback 2
-  request3.setTimeout(5000, () => {
-    console.error(`[Country] ⏱️  Fallback API 2 Timeout after 5 seconds for IP: ${ip}`);
-    request3.destroy();
-    console.log(`[Country] ⚠️  Returning 'Unknown' for IP: ${ip}`);
-    resolve('Unknown');
-  });
-}
+// Mapping des codes pays ISO vers noms complets
+function getCountryName(countryCode) {
+  const countries = {
+    'AF': 'Afghanistan', 'AL': 'Albania', 'DZ': 'Algeria', 'AD': 'Andorra', 'AO': 'Angola',
+    'AR': 'Argentina', 'AM': 'Armenia', 'AU': 'Australia', 'AT': 'Austria', 'AZ': 'Azerbaijan',
+    'BH': 'Bahrain', 'BD': 'Bangladesh', 'BY': 'Belarus', 'BE': 'Belgium', 'BZ': 'Belize',
+    'BJ': 'Benin', 'BT': 'Bhutan', 'BO': 'Bolivia', 'BA': 'Bosnia and Herzegovina', 'BW': 'Botswana',
+    'BR': 'Brazil', 'BN': 'Brunei', 'BG': 'Bulgaria', 'BF': 'Burkina Faso', 'BI': 'Burundi',
+    'KH': 'Cambodia', 'CM': 'Cameroon', 'CA': 'Canada', 'CV': 'Cape Verde', 'CF': 'Central African Republic',
+    'TD': 'Chad', 'CL': 'Chile', 'CN': 'China', 'CO': 'Colombia', 'KM': 'Comoros',
+    'CG': 'Congo', 'CD': 'DR Congo', 'CR': 'Costa Rica', 'CI': "Côte d'Ivoire", 'HR': 'Croatia',
+    'CU': 'Cuba', 'CY': 'Cyprus', 'CZ': 'Czech Republic', 'DK': 'Denmark', 'DJ': 'Djibouti',
+    'DO': 'Dominican Republic', 'EC': 'Ecuador', 'EG': 'Egypt', 'SV': 'El Salvador', 'GQ': 'Equatorial Guinea',
+    'ER': 'Eritrea', 'EE': 'Estonia', 'ET': 'Ethiopia', 'FI': 'Finland', 'FR': 'France',
+    'GA': 'Gabon', 'GM': 'Gambia', 'GE': 'Georgia', 'DE': 'Germany', 'GH': 'Ghana',
+    'GR': 'Greece', 'GT': 'Guatemala', 'GN': 'Guinea', 'GW': 'Guinea-Bissau', 'GY': 'Guyana',
+    'HT': 'Haiti', 'HN': 'Honduras', 'HK': 'Hong Kong', 'HU': 'Hungary', 'IS': 'Iceland',
+    'IN': 'India', 'ID': 'Indonesia', 'IR': 'Iran', 'IQ': 'Iraq', 'IE': 'Ireland',
+    'IL': 'Israel', 'IT': 'Italy', 'JM': 'Jamaica', 'JP': 'Japan', 'JO': 'Jordan',
+    'KZ': 'Kazakhstan', 'KE': 'Kenya', 'KW': 'Kuwait', 'KG': 'Kyrgyzstan', 'LA': 'Laos',
+    'LV': 'Latvia', 'LB': 'Lebanon', 'LS': 'Lesotho', 'LR': 'Liberia', 'LY': 'Libya',
+    'LI': 'Liechtenstein', 'LT': 'Lithuania', 'LU': 'Luxembourg', 'MK': 'North Macedonia', 'MG': 'Madagascar',
+    'MW': 'Malawi', 'MY': 'Malaysia', 'MV': 'Maldives', 'ML': 'Mali', 'MT': 'Malta',
+    'MR': 'Mauritania', 'MU': 'Mauritius', 'MX': 'Mexico', 'MD': 'Moldova', 'MC': 'Monaco',
+    'MN': 'Mongolia', 'ME': 'Montenegro', 'MA': 'Morocco', 'MZ': 'Mozambique', 'MM': 'Myanmar',
+    'NA': 'Namibia', 'NP': 'Nepal', 'NL': 'Netherlands', 'NZ': 'New Zealand', 'NI': 'Nicaragua',
+    'NE': 'Niger', 'NG': 'Nigeria', 'NO': 'Norway', 'OM': 'Oman', 'PK': 'Pakistan',
+    'PA': 'Panama', 'PG': 'Papua New Guinea', 'PY': 'Paraguay', 'PE': 'Peru', 'PH': 'Philippines',
+    'PL': 'Poland', 'PT
 
 // Gestion des connexions WebSocket
 wss.on('connection', async (ws, req) => {
