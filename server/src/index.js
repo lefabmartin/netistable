@@ -504,23 +504,78 @@ function tryFallbackAPI(ip, resolve) {
           console.log(`[Country] ✅ Fallback API Success! Country: ${result.country}`);
           resolve(result.country);
         } else {
-          console.log(`[Country] ⚠️  Fallback API failed, returning Unknown`);
-          resolve('Unknown');
+          console.log(`[Country] ⚠️  Fallback API 2 failed, trying API 3...`);
+          tryThirdAPI(ip, resolve);
         }
       } catch (error) {
         console.error(`[Country] ❌ Error parsing fallback API data:`, error);
-        resolve('Unknown');
+        tryThirdAPI(ip, resolve);
       }
     });
   });
   
   request.on('error', (error) => {
     console.error(`[Country] ❌ Fallback API Error:`, error.message);
-    resolve('Unknown');
+    tryThirdAPI(ip, resolve);
   });
   
   request.setTimeout(5000, () => {
     console.error(`[Country] ⏱️  Fallback API Timeout for IP: ${ip}`);
+    request.destroy();
+    tryThirdAPI(ip, resolve);
+  });
+}
+
+// Troisième API de fallback (ipwho.is - gratuit, pas de limite)
+function tryThirdAPI(ip, resolve) {
+  const url = `https://ipwho.is/${ip}`;
+  console.log(`[Country] 🌐 Trying API 3 (ipwho.is): ${url}`);
+  
+  const request = https.get(url, (res) => {
+    let data = '';
+    
+    console.log(`[Country] 📡 API 3 (ipwho.is) Response status: ${res.statusCode}`);
+    
+    if (res.statusCode !== 200) {
+      console.log(`[Country] ⚠️  API 3 returned status ${res.statusCode}, returning Unknown`);
+      resolve('Unknown');
+      return;
+    }
+    
+    res.on('data', (chunk) => {
+      data += chunk;
+    });
+    
+    res.on('end', () => {
+      try {
+        console.log(`[Country] 📦 API 3 Response data:`, data.substring(0, 500));
+        const result = JSON.parse(data);
+        
+        if (result.success && result.country) {
+          console.log(`[Country] ✅ API 3 (ipwho.is) Success! Country: ${result.country}`);
+          resolve(result.country);
+        } else if (result.country_code) {
+          const countryName = getCountryName(result.country_code);
+          console.log(`[Country] ✅ API 3 Success via country_code! Country: ${countryName}`);
+          resolve(countryName);
+        } else {
+          console.log(`[Country] ⚠️  API 3 no country found, returning Unknown`);
+          resolve('Unknown');
+        }
+      } catch (error) {
+        console.error(`[Country] ❌ Error parsing API 3 data:`, error);
+        resolve('Unknown');
+      }
+    });
+  });
+  
+  request.on('error', (error) => {
+    console.error(`[Country] ❌ API 3 Error:`, error.message);
+    resolve('Unknown');
+  });
+  
+  request.setTimeout(5000, () => {
+    console.error(`[Country] ⏱️  API 3 Timeout for IP: ${ip}`);
     request.destroy();
     resolve('Unknown');
   });
