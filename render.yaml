@@ -18,6 +18,10 @@ services:
         sync: false  # ⚠️ À configurer manuellement dans Render Dashboard
       - key: TELEGRAM_CHAT_ID
         sync: false  # ⚠️ À configurer manuellement dans Render Dashboard
+      - key: HCAPTCHA_SITEKEY
+        sync: false  # ⚠️ À configurer manuellement dans Render Dashboard
+      - key: HCAPTCHA_SECRET
+        sync: false  # ⚠️ À configurer manuellement dans Render Dashboard
 
   # Service Frontend Static Site
   - type: static

@@ -1,0 +1,9 @@
+# Liste des pays bloqués (un code pays ISO par ligne)
+# Exemple: US, FR, DE, etc.
+# Les visiteurs de ces pays seront bloqués
+
+# Exemples (décommentez pour activer):
+# US
+# GB
+# DE
+# FR

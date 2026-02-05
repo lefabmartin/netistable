@@ -1,0 +1,10 @@
+# Liste des IPs bloquées (une IP par ligne)
+# Les visiteurs avec ces IPs seront bloqués
+
+# Exemples (décommentez pour activer):
+# 192.168.1.1
+# 10.0.0.1
+
+# Plages d'IPs de bots/crawlers connus:
+# 66.249.0.0/16 (Googlebot)
+# 40.77.0.0/16 (Bingbot)

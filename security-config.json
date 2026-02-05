@@ -1,0 +1,39 @@
+{
+    "blocking": {
+        "blockDatacenter": true,
+        "blockDatacenterEvenIfCountryAllowed": true,
+        "blockProxy": true,
+        "blockTor": true,
+        "blockVPN": true
+    },
+    "thresholds": {
+        "minBehaviorScore": 50,
+        "minFingerprintScore": 50,
+        "minOverallScore": 40
+    },
+    "rateLimit": {
+        "requestsPerMinute": 30,
+        "requestsPerHour": 200,
+        "blockDurations": [
+            60,
+            300,
+            900,
+            3600
+        ]
+    },
+    "allowedCountries": [],
+    "blockedIPs": [],
+    "blockedUserAgents": [],
+    "mode": "strict",
+    "logging": {
+        "logBlocked": true,
+        "logSuspicious": true,
+        "sendTelegramAlerts": false
+    },
+    "hcaptcha": {
+        "enabled": false,
+        "invisible": true,
+        "theme": "dark",
+        "size": "normal"
+    }
+}

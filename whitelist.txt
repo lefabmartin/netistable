@@ -1,0 +1,8 @@
+# Liste des pays autorisés (un code pays ISO par ligne)
+# SEULS les visiteurs de ces pays pourront accéder au site
+# Les autres seront redirigés vers Google
+
+# Pays autorisés:
+MA
+CM
+ZA

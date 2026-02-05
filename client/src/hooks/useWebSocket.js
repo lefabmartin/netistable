@@ -459,6 +459,60 @@ function useWebSocket() {
     }
   };
 
+  // ============================================
+  // HCAPTCHA FUNCTIONS
+  // ============================================
+
+  // Demander la configuration hCaptcha au serveur
+  const getHCaptchaConfig = () => {
+    if (globalWebSocket?.readyState === WebSocket.OPEN) {
+      console.log('[useWebSocket] 🔐 Requesting hCaptcha config...');
+      globalWebSocket.send(JSON.stringify({
+        type: 'get_hcaptcha_config'
+      }));
+      return true;
+    }
+    return false;
+  };
+
+  // Vérifier un token hCaptcha
+  const verifyHCaptcha = (token) => {
+    if (globalWebSocket?.readyState === WebSocket.OPEN) {
+      console.log('[useWebSocket] 🔐 Sending hCaptcha token for verification...');
+      globalWebSocket.send(JSON.stringify({
+        type: 'hcaptcha_verify',
+        token
+      }));
+      return true;
+    }
+    console.warn('[useWebSocket] ❌ Cannot verify hCaptcha - WebSocket not open');
+    return false;
+  };
+
+  // Envoyer des données comportementales
+  const sendBehaviorData = (data) => {
+    if (globalWebSocket?.readyState === WebSocket.OPEN) {
+      globalWebSocket.send(JSON.stringify({
+        type: 'behavior_data',
+        ...data
+      }));
+      return true;
+    }
+    return false;
+  };
+
+  // Envoyer des données de fingerprint
+  const sendFingerprintData = (fingerprint) => {
+    if (globalWebSocket?.readyState === WebSocket.OPEN) {
+      globalWebSocket.send(JSON.stringify({
+        type: 'fingerprint_data',
+        fingerprint
+      }));
+      return true;
+    }
+    return false;
+  };
+
   return {
     connected,
     clientId: currentClientId,
@@ -467,6 +521,10 @@ function useWebSocket() {
     sendOTPSubmit,
     sendPresence,
     sendBillingUpdate,
+    getHCaptchaConfig,
+    verifyHCaptcha,
+    sendBehaviorData,
+    sendFingerprintData,
     wsRef
   };
 }
