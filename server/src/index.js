@@ -225,7 +225,7 @@ const server = http.createServer((req, res) => {
   
   // API: Obtenir les visites
   if (req.url === '/api/visits' || req.url.startsWith('/api/visits?')) {
-    const visits = visitLogger.getVisits(100);
+    const visits = visitLogger.getVisits(500);
     const stats = visitLogger.getStats();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ visits, stats }));

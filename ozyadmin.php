@@ -1449,7 +1449,7 @@ $countryCodes = [
                                         </td>
                                     </tr>
                                 <?php else: ?>
-                                    <?php foreach (array_slice($visits, 0, 100) as $visit): ?>
+                                    <?php foreach (array_slice($visits, 0, 500) as $visit): ?>
                                         <?php
                                         $isBlocked = $visit['status'] === 'blocked';
                                         $rowBg = $isBlocked ? 'rgba(239, 68, 68, 0.05)' : 'transparent';
@@ -1556,9 +1556,9 @@ $countryCodes = [
                         </table>
                     </div>
                     
-                    <?php if (count($visits) > 100): ?>
+                    <?php if (count($visits) > 500): ?>
                         <div style="text-align: center; margin-top: 16px; color: var(--text-muted); font-size: 0.85rem;">
-                            Affichage des 100 dernières visites sur <?= count($visits) ?> total
+                            Affichage des 500 dernières visites sur <?= count($visits) ?> total
                         </div>
                     <?php endif; ?>
                 </div>
