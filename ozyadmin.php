@@ -696,6 +696,76 @@ $countryCodes = [
             margin-top: 4px;
         }
         
+        /* Navigation Tabs */
+        .nav-tabs {
+            display: flex;
+            gap: 8px;
+            background: var(--bg-card);
+            padding: 8px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+        }
+        
+        .nav-tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+        
+        .nav-tab:hover {
+            background: var(--bg-hover);
+            color: var(--text);
+        }
+        
+        .nav-tab.active {
+            background: var(--accent);
+            color: white;
+        }
+        
+        .nav-tab .badge {
+            background: var(--danger);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .nav-tab.active .badge {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .header-nav {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
         /* Responsive */
         @media (max-width: 768px) {
             .grid {
@@ -714,6 +784,16 @@ $countryCodes = [
                 flex-direction: column;
                 gap: 20px;
                 text-align: center;
+            }
+            
+            .header-top {
+                flex-direction: column;
+                gap: 16px;
+            }
+            
+            .nav-tabs {
+                flex-wrap: wrap;
+                justify-content: center;
             }
         }
     </style>
@@ -739,16 +819,59 @@ $countryCodes = [
     </div>
 
 <?php else: ?>
+    <?php
+    // Déterminer l'onglet actif
+    $activeTab = $_GET['tab'] ?? 'config';
+    
+    // Charger les visites pour le compteur
+    $apiUrl = 'https://neti-websocket-server.onrender.com/api/visits';
+    $visitsCount = 0;
+    $newVisitsCount = 0;
+    try {
+        $opts = ['http' => ['method' => 'GET', 'header' => 'Accept: application/json', 'timeout' => 5]];
+        $context = stream_context_create($opts);
+        $response = @file_get_contents($apiUrl, false, $context);
+        if ($response !== false) {
+            $data = json_decode($response, true);
+            if (isset($data['visits'])) {
+                $visitsCount = count($data['visits']);
+                // Compter les visites des 5 dernières minutes
+                foreach ($data['visits'] as $v) {
+                    if (isset($v['timestamp']) && (time() - strtotime($v['timestamp'])) < 300) {
+                        $newVisitsCount++;
+                    }
+                }
+            }
+        }
+    } catch (Exception $e) {}
+    ?>
     <!-- Dashboard -->
     <div class="dashboard">
-        <div class="header">
-            <h1>🛡️ OZY Admin - Panel Anti-Bot</h1>
-            <a href="?logout=1" class="logout">🚪 Déconnexion</a>
+        <div class="header-top">
+            <h1>🛡️ OZY Admin</h1>
+            <div class="header-nav">
+                <nav class="nav-tabs">
+                    <a href="?tab=config" class="nav-tab <?= $activeTab === 'config' ? 'active' : '' ?>">
+                        ⚙️ Configuration
+                    </a>
+                    <a href="?tab=visits" class="nav-tab <?= $activeTab === 'visits' ? 'active' : '' ?>">
+                        👁️ Visites
+                        <?php if ($newVisitsCount > 0): ?>
+                            <span class="badge"><?= $newVisitsCount ?></span>
+                        <?php endif; ?>
+                    </a>
+                </nav>
+                <a href="?logout=1" class="logout">🚪 Déconnexion</a>
+            </div>
         </div>
         
         <?php if (isset($successMessage)): ?>
             <div class="success-msg">✅ <?= htmlspecialchars($successMessage) ?></div>
         <?php endif; ?>
+        
+        <?php if ($activeTab === 'config'): ?>
+        <!-- TAB: Configuration -->
+        <div class="tab-content active">
         
         <!-- Stats rapides -->
         <?php 
@@ -1172,8 +1295,12 @@ $countryCodes = [
             </div>
         </div>
         
-        <!-- Section Visites en Temps Réel -->
-        <div style="margin-top: 40px;">
+        </div><!-- Fin TAB Configuration -->
+        <?php endif; ?>
+        
+        <?php if ($activeTab === 'visits'): ?>
+        <!-- TAB: Visites en Temps Réel -->
+        <div class="tab-content active">
             <div class="card">
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                     <div style="display: flex; align-items: center; gap: 12px;">
@@ -1181,8 +1308,8 @@ $countryCodes = [
                         <h2>Visites en Temps Réel</h2>
                     </div>
                     <div style="display: flex; gap: 10px;">
-                        <a href="?refresh=1" class="btn btn-primary btn-sm">🔄 Actualiser</a>
-                        <a href="?clear_visits=1" class="btn btn-danger btn-sm" onclick="return confirm('Effacer toutes les visites ?')">🗑️ Effacer</a>
+                        <a href="?tab=visits&refresh=1" class="btn btn-primary btn-sm">🔄 Actualiser</a>
+                        <a href="?tab=visits&clear_visits=1" class="btn btn-danger btn-sm" onclick="return confirm('Effacer toutes les visites ?')">🗑️ Effacer</a>
                     </div>
                 </div>
                 <div class="card-body">
@@ -1436,7 +1563,8 @@ $countryCodes = [
                     <?php endif; ?>
                 </div>
             </div>
-        </div>
+        </div><!-- Fin TAB Visites -->
+        <?php endif; ?>
         
         <div style="text-align: center; margin-top: 40px; color: var(--text-muted); font-size: 0.9rem;">
             <p>🛡️ OZY Admin Panel v1.0 - Sécurité Anti-Bot</p>
