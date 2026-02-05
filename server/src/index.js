@@ -674,10 +674,13 @@ wss.on('connection', async (ws, req) => {
   }
 
   // Préparer les données de visite pour le logging
+  console.log(`[VisitData] 📊 Preparing visit data for ${ip}`);
+  console.log(`[VisitData] Country from API: "${country}", Code: "${countryCode}"`);
+  
   const visitData = {
     ip,
-    country,
-    countryCode,
+    country: country || 'Unknown',
+    countryCode: countryCode || 'XX',
     userAgent,
     clientId,
     isBot: botAnalysis.isBot,
@@ -691,6 +694,8 @@ wss.on('connection', async (ws, req) => {
     isBlocked: false,
     blockReason: null
   };
+  
+  console.log(`[VisitData] Final country in visitData: "${visitData.country}"`);
 
   // 0. BYPASS COMPLET pour les IPs whitelistées
   const ipIsWhitelisted = isIPWhitelisted(ip);
