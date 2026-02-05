@@ -267,7 +267,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]
         ]);
         @file_get_contents($url, false, $context);
-        $message = 'Historique des visites effacé';
+        $message = 'Liste des 100 dernières visites effacée (compteurs préservés)';
         $messageType = 'success';
     }
 }
@@ -278,14 +278,18 @@ $whitelist = loadWhitelist();
 $blacklist = loadBlacklist();
 $visitsData = fetchVisits();
 $visits = $visitsData['visits'] ?? [];
-$stats = $visitsData['stats'] ?? ['total' => 0, 'blocked' => 0, 'allowed' => 0];
+$stats = $visitsData['stats'] ?? ['total' => 0, 'blocked' => 0, 'allowed' => 0, 'detections' => []];
 
-// Statistiques
-$totalVisits = $stats['total'] ?? count($visits);
-$blockedVisits = $stats['blocked'] ?? count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'blocked'));
-$allowedVisits = $stats['allowed'] ?? ($totalVisits - $blockedVisits);
-$botVisits = count(array_filter($visits, fn($v) => ($v['detection']['isBot'] ?? false)));
-$datacenterVisits = count(array_filter($visits, fn($v) => ($v['detection']['isDatacenter'] ?? false)));
+// Statistiques PERSISTANTES (depuis les stats du serveur, pas calculées depuis la liste)
+$totalVisits = $stats['total'] ?? 0;
+$blockedVisits = $stats['blocked'] ?? 0;
+$allowedVisits = $stats['allowed'] ?? 0;
+$detections = $stats['detections'] ?? [];
+$botVisits = $detections['bots'] ?? 0;
+$datacenterVisits = $detections['datacenters'] ?? 0;
+$proxyVisits = $detections['proxies'] ?? 0;
+$vpnVisits = $detections['vpns'] ?? 0;
+$torVisits = $detections['tor'] ?? 0;
 
 // Tab actif
 $activeTab = $_GET['tab'] ?? 'security';
@@ -1531,8 +1535,8 @@ $activeTab = $_GET['tab'] ?? 'security';
                     </div>
                     <a href="?tab=visits" class="btn btn-secondary">🔄 Actualiser</a>
                     <form method="POST" style="display: inline;">
-                        <button type="submit" name="clear_visits" class="btn btn-danger" onclick="return confirm('Effacer tout l\'historique ?');">
-                            🗑️ Effacer
+                        <button type="submit" name="clear_visits" class="btn btn-danger" onclick="return confirm('Effacer la liste des 100 dernières visites ?\\n\\nLes compteurs (Total, Bloquées, Bots, etc.) seront préservés.');">
+                            🗑️ Effacer liste
                         </button>
                     </form>
                 </div>
@@ -1559,7 +1563,7 @@ $activeTab = $_GET['tab'] ?? 'security';
                     <tbody>
                         <?php 
                         $now = new DateTime();
-                        foreach (array_slice($visits, 0, 500) as $index => $visit): 
+                        foreach (array_slice($visits, 0, 100) as $index => $visit): 
                             $isBlocked = ($visit['status'] ?? '') === 'blocked';
                             $detection = $visit['detection'] ?? [];
                             $isBot = $detection['isBot'] ?? false;
@@ -1635,11 +1639,12 @@ $activeTab = $_GET['tab'] ?? 'security';
                 <?php endif; ?>
             </div>
             
-            <?php if (count($visits) > 500): ?>
             <div style="text-align: center; padding: 1rem; color: var(--text-muted); font-size: 0.85rem;">
-                Affichage des 500 dernières visites sur <?= count($visits) ?> total
+                📋 Affichage des <?= min(count($visits), 100) ?> dernières visites
+                <?php if ($totalVisits > 0): ?>
+                <br><span style="color: var(--neon-cyan);">📊 Compteurs persistants : <?= number_format($totalVisits) ?> visites totales enregistrées</span>
+                <?php endif; ?>
             </div>
-            <?php endif; ?>
         </div>
         <?php endif; ?>
 

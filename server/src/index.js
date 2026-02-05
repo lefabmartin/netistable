@@ -223,10 +223,10 @@ const server = http.createServer((req, res) => {
     return;
   }
   
-  // API: Obtenir les visites
+  // API: Obtenir les visites (100 dernières) et les stats persistantes
   if (req.url === '/api/visits' || req.url.startsWith('/api/visits?')) {
-    const visits = visitLogger.getVisits(500);
-    const stats = visitLogger.getStats();
+    const visits = visitLogger.getVisits(100); // Seulement les 100 dernières
+    const stats = visitLogger.getStats(); // Stats persistantes (compteurs illimités)
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ visits, stats }));
     return;
@@ -244,11 +244,16 @@ const server = http.createServer((req, res) => {
     return;
   }
   
-  // API: Effacer les visites
+  // API: Effacer la liste des visites récentes (garde les compteurs!)
   if (req.url === '/api/visits/clear' && req.method === 'POST') {
-    visitLogger.clearVisits();
+    visitLogger.clearVisits(); // Efface seulement la liste, pas les stats
+    const stats = visitLogger.getStats(); // Retourne les stats préservées
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, message: 'Visits cleared' }));
+    res.end(JSON.stringify({ 
+      success: true, 
+      message: 'Recent visits list cleared (stats preserved)',
+      stats // Retourne les stats pour confirmer qu'elles sont préservées
+    }));
     return;
   }
   
