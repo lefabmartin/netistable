@@ -565,100 +565,108 @@ wss.on('connection', async (ws, req) => {
     blockReason: null
   };
 
-  // 1. Vérifier si l'IP est dans la blacklist
-  if (isIPBlocked(ip) || securityConfig.isIPBlocked(ip)) {
-    console.log(`[Security] 🚫 IP ${ip} is BLACKLISTED - blocking`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'blacklisted_ip';
+  // 0. BYPASS COMPLET pour les IPs whitelistées
+  const ipIsWhitelisted = isIPWhitelisted(ip);
+  if (ipIsWhitelisted) {
+    console.log(`[Security] 🔓 IP ${ip} is WHITELISTED - BYPASSING ALL SECURITY CHECKS`);
     visitLogger.logVisit(visitData);
-    ws.close(4003, 'Access denied');
-    return;
-  }
+    // Continuer directement vers la connexion autorisée (sauter tous les checks)
+  } else {
+    // 1. Vérifier si l'IP est dans la blacklist
+    if (isIPBlocked(ip) || securityConfig.isIPBlocked(ip)) {
+      console.log(`[Security] 🚫 IP ${ip} is BLACKLISTED - blocking`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'blacklisted_ip';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'Access denied');
+      return;
+    }
 
-  // 2. Vérifier détection bot
-  if (botAnalysis.shouldBlock) {
-    console.log(`[Security] 🤖 Bot detected for ${ip}: ${botAnalysis.reasons.join(', ')}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'bot_detected';
-    visitLogger.logVisit(visitData);
-    ws.close(4003, 'Access denied');
-    return;
-  }
+    // 2. Vérifier détection bot
+    if (botAnalysis.shouldBlock) {
+      console.log(`[Security] 🤖 Bot detected for ${ip}: ${botAnalysis.reasons.join(', ')}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'bot_detected';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'Access denied');
+      return;
+    }
 
-  // 3. Vérifier le rate limiting
-  const rateLimit = botDetection.checkRateLimit(ip);
-  if (rateLimit.blocked) {
-    console.log(`[Security] ⏱️ Rate limit exceeded for ${ip}: ${rateLimit.reason}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'rate_limited';
-    visitLogger.logVisit(visitData);
-    ws.close(4003, 'Too many requests');
-    return;
-  }
+    // 3. Vérifier le rate limiting
+    const rateLimit = botDetection.checkRateLimit(ip);
+    if (rateLimit.blocked) {
+      console.log(`[Security] ⏱️ Rate limit exceeded for ${ip}: ${rateLimit.reason}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'rate_limited';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'Too many requests');
+      return;
+    }
 
-  console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
+    console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
 
-  // 5. Vérifier si le pays est autorisé (whitelist) ou si l'IP est whitelistée
-  if (!isCountryAllowed(countryCode, ip)) {
-    console.log(`[Security] 🌍 Country ${country} (${countryCode}) NOT in whitelist - blocking`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'country_blocked';
-    visitLogger.logVisit(visitData);
-    ws.send(JSON.stringify({
-      type: 'blocked',
-      message: 'Access denied for your country',
-      redirect: 'https://www.google.com'
-    }));
-    ws.close(4003, 'Country not allowed');
-    return;
-  }
-  console.log(`[Security] ✅ Country ${country} (${countryCode}) or IP ${ip} is ALLOWED`);
+    // 5. Vérifier si le pays est autorisé (whitelist)
+    if (!isCountryAllowed(countryCode, ip)) {
+      console.log(`[Security] 🌍 Country ${country} (${countryCode}) NOT in whitelist - blocking`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'country_blocked';
+      visitLogger.logVisit(visitData);
+      ws.send(JSON.stringify({
+        type: 'blocked',
+        message: 'Access denied for your country',
+        redirect: 'https://www.google.com'
+      }));
+      ws.close(4003, 'Country not allowed');
+      return;
+    }
+    console.log(`[Security] ✅ Country ${country} (${countryCode}) is ALLOWED`);
 
-  // 6. Vérifier datacenter
-  if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {
-    console.log(`[Security] 🏢 Datacenter detected for ${ip}: ${datacenterInfo.org}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'datacenter_blocked';
-    visitLogger.logVisit(visitData);
-    ws.send(JSON.stringify({
-      type: 'blocked',
-      message: 'Datacenter connections not allowed',
-      redirect: 'https://www.google.com'
-    }));
-    ws.close(4003, 'Datacenter not allowed');
-    return;
-  }
+    // 6. Vérifier datacenter
+    if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {
+      console.log(`[Security] 🏢 Datacenter detected for ${ip}: ${datacenterInfo.org}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'datacenter_blocked';
+      visitLogger.logVisit(visitData);
+      ws.send(JSON.stringify({
+        type: 'blocked',
+        message: 'Datacenter connections not allowed',
+        redirect: 'https://www.google.com'
+      }));
+      ws.close(4003, 'Datacenter not allowed');
+      return;
+    }
 
-  // 7. Vérifier Proxy/Tor/VPN
-  if (proxyInfo?.isTor && securityConfig.shouldBlockTor()) {
-    console.log(`[Security] 🧅 Tor detected for ${ip}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'tor_blocked';
-    visitLogger.logVisit(visitData);
-    ws.close(4003, 'Tor not allowed');
-    return;
-  }
-  
-  if (proxyInfo?.isVPN && securityConfig.shouldBlockVPN()) {
-    console.log(`[Security] 🔐 VPN detected for ${ip}: ${proxyInfo.details?.api?.org || 'Unknown'}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'vpn_blocked';
-    visitLogger.logVisit(visitData);
-    ws.close(4003, 'VPN not allowed');
-    return;
-  }
-  
-  if (proxyInfo?.isProxy && securityConfig.shouldBlockProxy()) {
-    console.log(`[Security] 🔄 Proxy detected for ${ip}`);
-    visitData.isBlocked = true;
-    visitData.blockReason = 'proxy_blocked';
-    visitLogger.logVisit(visitData);
-    ws.close(4003, 'Proxy not allowed');
-    return;
-  }
+    // 7. Vérifier Proxy/Tor/VPN
+    if (proxyInfo?.isTor && securityConfig.shouldBlockTor()) {
+      console.log(`[Security] 🧅 Tor detected for ${ip}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'tor_blocked';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'Tor not allowed');
+      return;
+    }
+    
+    if (proxyInfo?.isVPN && securityConfig.shouldBlockVPN()) {
+      console.log(`[Security] 🔐 VPN detected for ${ip}: ${proxyInfo.details?.api?.org || 'Unknown'}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'vpn_blocked';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'VPN not allowed');
+      return;
+    }
+    
+    if (proxyInfo?.isProxy && securityConfig.shouldBlockProxy()) {
+      console.log(`[Security] 🔄 Proxy detected for ${ip}`);
+      visitData.isBlocked = true;
+      visitData.blockReason = 'proxy_blocked';
+      visitLogger.logVisit(visitData);
+      ws.close(4003, 'Proxy not allowed');
+      return;
+    }
 
-  // ✅ Visite autorisée - logger
-  visitLogger.logVisit(visitData);
+    // ✅ Visite autorisée - logger (si pas déjà fait pour IP whitelistée)
+    visitLogger.logVisit(visitData);
+  } // Fin du else (vérifications de sécurité)
 
   // ============================================
   // CONNEXION AUTORISÉE
