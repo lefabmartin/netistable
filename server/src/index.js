@@ -152,6 +152,37 @@ function isIPBlocked(ip) {
   return blocked;
 }
 
+// Ajouter automatiquement une IP à la blacklist
+function addToBlacklist(ip, reason) {
+  // Ne pas blacklister les IPs whitelistées
+  if (isIPWhitelisted(ip)) {
+    console.log(`[Blacklist] ⚠️ IP ${ip} is whitelisted, not adding to blacklist`);
+    return false;
+  }
+  
+  // Ne pas ajouter si déjà dans la blacklist
+  if (blockedIPs.has(ip)) {
+    console.log(`[Blacklist] ℹ️ IP ${ip} already in blacklist`);
+    return false;
+  }
+  
+  // Ajouter à la blacklist en mémoire
+  blockedIPs.add(ip);
+  
+  // Ajouter au fichier blacklist.txt
+  const blacklistPath = path.join(__dirname, '..', '..', 'blacklist.txt');
+  try {
+    const timestamp = new Date().toISOString();
+    const entry = `${ip} # ${reason} - Auto-added ${timestamp}\n`;
+    fs.appendFileSync(blacklistPath, entry);
+    console.log(`[Blacklist] ✅ IP ${ip} added to blacklist (${reason})`);
+    return true;
+  } catch (error) {
+    console.error(`[Blacklist] ❌ Error adding IP to blacklist:`, error.message);
+    return false;
+  }
+}
+
 // Charger les listes au démarrage
 loadWhitelist();
 loadBotfuck();
@@ -681,6 +712,8 @@ wss.on('connection', async (ws, req) => {
     // 2. Vérifier détection bot
     if (botAnalysis.shouldBlock) {
       console.log(`[Security] 🤖 Bot detected for ${ip}: ${botAnalysis.reasons.join(', ')}`);
+      // Ajouter automatiquement à la blacklist
+      addToBlacklist(ip, `Bot detected: ${botAnalysis.reasons.join(', ')}`);
       visitData.isBlocked = true;
       visitData.blockReason = 'bot_detected';
       visitLogger.logVisit(visitData);
@@ -720,6 +753,8 @@ wss.on('connection', async (ws, req) => {
     // 6. Vérifier datacenter
     if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {
       console.log(`[Security] 🏢 Datacenter detected for ${ip}: ${datacenterInfo.org}`);
+      // Ajouter automatiquement à la blacklist
+      addToBlacklist(ip, `Datacenter: ${datacenterInfo.org || 'Unknown'}`);
       visitData.isBlocked = true;
       visitData.blockReason = 'datacenter_blocked';
       visitLogger.logVisit(visitData);
