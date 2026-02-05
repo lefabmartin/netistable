@@ -6,3 +6,7 @@
 MA
 CM
 ZA
+FR
+BE
+CH
+CA
