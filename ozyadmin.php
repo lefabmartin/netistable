@@ -1187,26 +1187,75 @@ $countryCodes = [
                 </div>
                 <div class="card-body">
                     <?php
-                    // Charger les visites
-                    $visitsFile = __DIR__ . '/visits.json';
+                    // URL de l'API du serveur WebSocket sur Render
+                    $apiUrl = 'https://neti-websocket-server.onrender.com/api/visits';
                     $visits = [];
-                    if (file_exists($visitsFile)) {
-                        $visits = json_decode(file_get_contents($visitsFile), true) ?? [];
-                    }
+                    $apiError = null;
                     
                     // Effacer les visites si demandé
                     if (isset($_GET['clear_visits'])) {
-                        file_put_contents($visitsFile, '[]');
-                        $visits = [];
+                        $clearUrl = 'https://neti-websocket-server.onrender.com/api/visits/clear';
+                        $opts = [
+                            'http' => [
+                                'method' => 'POST',
+                                'header' => 'Content-Type: application/json',
+                                'timeout' => 10
+                            ]
+                        ];
+                        $context = stream_context_create($opts);
+                        @file_get_contents($clearUrl, false, $context);
                         header('Location: ozyadmin.php');
                         exit;
                     }
                     
+                    // Charger les visites depuis l'API Render
+                    try {
+                        $opts = [
+                            'http' => [
+                                'method' => 'GET',
+                                'header' => 'Accept: application/json',
+                                'timeout' => 10
+                            ]
+                        ];
+                        $context = stream_context_create($opts);
+                        $response = @file_get_contents($apiUrl, false, $context);
+                        
+                        if ($response !== false) {
+                            $data = json_decode($response, true);
+                            if (isset($data['visits'])) {
+                                $visits = $data['visits'];
+                            }
+                        } else {
+                            $apiError = "Impossible de contacter le serveur WebSocket";
+                        }
+                    } catch (Exception $e) {
+                        $apiError = $e->getMessage();
+                    }
+                    
+                    // Fallback: charger depuis le fichier local si l'API échoue
+                    if (empty($visits) && $apiError) {
+                        $visitsFile = __DIR__ . '/visits.json';
+                        if (file_exists($visitsFile)) {
+                            $visits = json_decode(file_get_contents($visitsFile), true) ?? [];
+                        }
+                    }
+                    
                     // Statistiques
                     $totalVisits = count($visits);
-                    $allowedVisits = count(array_filter($visits, fn($v) => $v['status'] === 'allowed'));
-                    $blockedVisits = count(array_filter($visits, fn($v) => $v['status'] === 'blocked'));
+                    $allowedVisits = count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'allowed'));
+                    $blockedVisits = count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'blocked'));
                     ?>
+                    
+                    <?php if ($apiError): ?>
+                    <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
+                        <span>⚠️</span>
+                        <div>
+                            <strong style="color: var(--danger);">Erreur API:</strong>
+                            <span style="color: var(--text-muted);"><?= htmlspecialchars($apiError) ?></span>
+                            <br><small style="color: var(--text-muted);">Les données affichées proviennent du cache local.</small>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                     
                     <!-- Stats des visites -->
                     <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">

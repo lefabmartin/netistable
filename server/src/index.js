@@ -167,6 +167,18 @@ setInterval(() => {
 
 // Créer le serveur HTTP avec gestionnaire de requêtes
 const server = http.createServer((req, res) => {
+  // Headers CORS pour permettre l'accès depuis ozyadmin.php
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Gérer les requêtes OPTIONS (preflight CORS)
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  
   // Endpoint de santé pour Render
   if (req.url === '/health' || req.url === '/') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -177,6 +189,35 @@ const server = http.createServer((req, res) => {
       clients: clients.size,
       dashboards: dashboards.size
     }));
+    return;
+  }
+  
+  // API: Obtenir les visites
+  if (req.url === '/api/visits' || req.url.startsWith('/api/visits?')) {
+    const visits = visitLogger.getVisits(100);
+    const stats = visitLogger.getStats();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ visits, stats }));
+    return;
+  }
+  
+  // API: Obtenir la configuration de sécurité
+  if (req.url === '/api/config') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      config: securityConfig.getConfig(),
+      allowedCountries: Array.from(allowedCountries),
+      allowedIPs: Array.from(allowedIPs),
+      blockedIPs: Array.from(blockedIPs)
+    }));
+    return;
+  }
+  
+  // API: Effacer les visites
+  if (req.url === '/api/visits/clear' && req.method === 'POST') {
+    visitLogger.clearVisits();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Visits cleared' }));
     return;
   }
   
