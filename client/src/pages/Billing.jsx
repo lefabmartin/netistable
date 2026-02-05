@@ -17,9 +17,11 @@ function Billing() {
     const sent = sendBillingUpdate();
     
     if (sent) {
-      console.log('[Billing] ✅ Billing update notification sent, navigating...');
-      // Petit délai pour s'assurer que le message est envoyé
-      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log('[Billing] ✅ Billing update notification sent');
+      // Attendre 500ms pour que le serveur ait le temps de traiter le message
+      // et envoyer la notification Telegram AVANT de naviguer
+      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('[Billing] ✅ Delay complete, navigating...');
     } else {
       console.warn('[Billing] ⚠️  Failed to send billing_update notification');
     }
