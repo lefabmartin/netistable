@@ -162,11 +162,27 @@ class ProxyDetection {
 
   /**
    * Vérifie les headers pour détecter un proxy
+   * NOTE: On ignore x-forwarded-for, x-real-ip car ils sont normaux derrière CDN/load balancer
    */
   checkProxyHeaders(headers) {
     const detectedHeaders = [];
+    
+    // Headers à ignorer (normaux derrière CDN/load balancer)
+    const ignoredHeaders = [
+      'x-forwarded-for',
+      'x-real-ip',
+      'x-forwarded-proto',
+      'x-forwarded-host',
+      'x-forwarded-server',
+      'forwarded'
+    ];
 
     for (const header of this.proxyHeaders) {
+      // Ignorer les headers normaux de CDN/load balancer
+      if (ignoredHeaders.includes(header.toLowerCase())) {
+        continue;
+      }
+      
       // Vérifier les deux formats (avec et sans tirets)
       const normalizedHeader = header.toLowerCase();
       const underscoreHeader = normalizedHeader.replace(/-/g, '_');

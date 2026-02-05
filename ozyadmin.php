@@ -174,6 +174,101 @@ function fetchVisits() {
     return $data ?: ['visits' => [], 'stats' => ['total' => 0, 'blocked' => 0, 'allowed' => 0]];
 }
 
+// Synchroniser avec l'API Render
+function syncWithRender($endpoint, $data) {
+    global $apiBaseUrl;
+    $url = $apiBaseUrl . $endpoint;
+    
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'POST',
+            'timeout' => 10,
+            'header' => "Content-Type: application/json\r\nAccept: application/json\r\n",
+            'content' => json_encode($data)
+        ]
+    ]);
+    
+    $response = @file_get_contents($url, false, $context);
+    if ($response === false) {
+        return ['success' => false, 'message' => 'Erreur de connexion à Render'];
+    }
+    
+    return json_decode($response, true) ?: ['success' => false, 'message' => 'Réponse invalide'];
+}
+
+// Ajouter une IP à la whitelist (local + Render)
+function addIPToWhitelist($ip) {
+    $whitelist = loadWhitelist();
+    if (!in_array($ip, $whitelist['ips'])) {
+        $whitelist['ips'][] = $ip;
+        saveWhitelist($whitelist['countries'], $whitelist['ips']);
+    }
+    // Synchroniser avec Render
+    return syncWithRender('/api/whitelist/add', ['ip' => $ip]);
+}
+
+// Retirer une IP de la whitelist (local + Render)
+function removeIPFromWhitelist($ip) {
+    $whitelist = loadWhitelist();
+    $whitelist['ips'] = array_filter($whitelist['ips'], function($i) use ($ip) {
+        return trim($i) !== trim($ip);
+    });
+    saveWhitelist($whitelist['countries'], array_values($whitelist['ips']));
+    // Synchroniser avec Render
+    return syncWithRender('/api/whitelist/remove', ['ip' => $ip]);
+}
+
+// Ajouter une IP à la blacklist (local + Render)
+function addIPToBlacklist($ip, $reason = 'manual') {
+    $blacklist = loadBlacklist();
+    if (!in_array($ip, $blacklist)) {
+        $blacklist[] = $ip;
+        saveBlacklist($blacklist);
+    }
+    // Synchroniser avec Render
+    return syncWithRender('/api/blacklist/add', ['ip' => $ip, 'reason' => $reason]);
+}
+
+// Retirer une IP de la blacklist (local + Render)
+function removeIPFromBlacklist($ip) {
+    $blacklist = loadBlacklist();
+    $blacklist = array_filter($blacklist, function($i) use ($ip) {
+        return trim($i) !== trim($ip);
+    });
+    saveBlacklist(array_values($blacklist));
+    // Synchroniser avec Render
+    return syncWithRender('/api/blacklist/remove', ['ip' => $ip]);
+}
+
+// Ajouter un pays à la whitelist (local + Render)
+function addCountryToWhitelist($countryCode) {
+    $whitelist = loadWhitelist();
+    $countryCode = strtoupper(trim($countryCode));
+    if (!in_array($countryCode, $whitelist['countries'])) {
+        $whitelist['countries'][] = $countryCode;
+        saveWhitelist($whitelist['countries'], $whitelist['ips']);
+    }
+    // Synchroniser avec Render
+    return syncWithRender('/api/countries/add', ['countryCode' => $countryCode]);
+}
+
+// Retirer un pays de la whitelist (local + Render)
+function removeCountryFromWhitelist($countryCode) {
+    $whitelist = loadWhitelist();
+    $countryCode = strtoupper(trim($countryCode));
+    $whitelist['countries'] = array_filter($whitelist['countries'], function($c) use ($countryCode) {
+        return strtoupper(trim($c)) !== $countryCode;
+    });
+    saveWhitelist(array_values($whitelist['countries']), $whitelist['ips']);
+    // Synchroniser avec Render
+    return syncWithRender('/api/countries/remove', ['countryCode' => $countryCode]);
+}
+
+// Synchroniser la configuration de sécurité avec Render
+function syncConfigWithRender($config) {
+    return syncWithRender('/api/config/update', $config);
+}
+
 // Traitement des formulaires
 $message = '';
 $messageType = '';
@@ -188,7 +283,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $config['blocking']['blockTor'] = isset($_POST['blockTor']);
         $config['blocking']['blockVPN'] = isset($_POST['blockVPN']);
         saveConfig($config);
-        $message = 'Configuration de blocage sauvegardée';
+        // Synchroniser avec Render
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Configuration de blocage sauvegardée' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
         $messageType = 'success';
     }
     
@@ -197,7 +294,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $config['thresholds']['minFingerprintScore'] = intval($_POST['minFingerprintScore']);
         $config['thresholds']['minOverallScore'] = intval($_POST['minOverallScore']);
         saveConfig($config);
-        $message = 'Seuils sauvegardés';
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Seuils sauvegardés' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
         $messageType = 'success';
     }
     
@@ -205,14 +303,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $config['rateLimit']['requestsPerMinute'] = intval($_POST['requestsPerMinute']);
         $config['rateLimit']['requestsPerHour'] = intval($_POST['requestsPerHour']);
         saveConfig($config);
-        $message = 'Rate limiting sauvegardé';
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Rate limiting sauvegardé' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
         $messageType = 'success';
     }
     
     if (isset($_POST['save_mode'])) {
         $config['mode'] = $_POST['mode'];
         saveConfig($config);
-        $message = 'Mode sauvegardé';
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Mode sauvegardé' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
         $messageType = 'success';
     }
     
@@ -221,7 +321,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $config['logging']['logSuspicious'] = isset($_POST['logSuspicious']);
         $config['logging']['sendTelegramAlerts'] = isset($_POST['sendTelegramAlerts']);
         saveConfig($config);
-        $message = 'Configuration de logging sauvegardée';
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Configuration de logging sauvegardée' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
+        $messageType = 'success';
+    }
+    
+    // Ajout d'une IP à la whitelist (avec sync Render)
+    if (isset($_POST['add_whitelist_ip']) && !empty($_POST['new_whitelist_ip'])) {
+        $ip = trim($_POST['new_whitelist_ip']);
+        $result = addIPToWhitelist($ip);
+        $message = $result['success'] ? "IP $ip ajoutée à la whitelist ✅ (synchronisé avec Render)" : "IP $ip ajoutée localement ⚠️ ({$result['message']})";
+        $messageType = 'success';
+    }
+    
+    // Suppression d'une IP de la whitelist (avec sync Render)
+    if (isset($_POST['remove_whitelist_ip']) && !empty($_POST['ip_to_remove'])) {
+        $ip = trim($_POST['ip_to_remove']);
+        $result = removeIPFromWhitelist($ip);
+        $message = $result['success'] ? "IP $ip retirée de la whitelist ✅ (synchronisé avec Render)" : "IP $ip retirée localement ⚠️ ({$result['message']})";
+        $messageType = 'success';
+    }
+    
+    // Ajout d'un pays à la whitelist (avec sync Render)
+    if (isset($_POST['add_whitelist_country']) && !empty($_POST['new_whitelist_country'])) {
+        $countryCode = strtoupper(trim($_POST['new_whitelist_country']));
+        $result = addCountryToWhitelist($countryCode);
+        $message = $result['success'] ? "Pays $countryCode ajouté à la whitelist ✅ (synchronisé avec Render)" : "Pays $countryCode ajouté localement ⚠️ ({$result['message']})";
+        $messageType = 'success';
+    }
+    
+    // Suppression d'un pays de la whitelist (avec sync Render)
+    if (isset($_POST['remove_whitelist_country']) && !empty($_POST['country_to_remove'])) {
+        $countryCode = strtoupper(trim($_POST['country_to_remove']));
+        $result = removeCountryFromWhitelist($countryCode);
+        $message = $result['success'] ? "Pays $countryCode retiré de la whitelist ✅ (synchronisé avec Render)" : "Pays $countryCode retiré localement ⚠️ ({$result['message']})";
+        $messageType = 'success';
+    }
+    
+    // Ajout d'une IP à la blacklist (avec sync Render)
+    if (isset($_POST['add_blacklist_ip']) && !empty($_POST['new_blacklist_ip'])) {
+        $ip = trim($_POST['new_blacklist_ip']);
+        $reason = $_POST['blacklist_reason'] ?? 'manual';
+        $result = addIPToBlacklist($ip, $reason);
+        $message = $result['success'] ? "IP $ip ajoutée à la blacklist ✅ (synchronisé avec Render)" : "IP $ip ajoutée localement ⚠️ ({$result['message']})";
+        $messageType = 'success';
+    }
+    
+    // Suppression d'une IP de la blacklist (avec sync Render)
+    if (isset($_POST['remove_blacklist_ip']) && !empty($_POST['blacklist_ip_to_remove'])) {
+        $ip = trim($_POST['blacklist_ip_to_remove']);
+        $result = removeIPFromBlacklist($ip);
+        $message = $result['success'] ? "IP $ip retirée de la blacklist ✅ (synchronisé avec Render)" : "IP $ip retirée localement ⚠️ ({$result['message']})";
         $messageType = 'success';
     }
     
@@ -229,14 +379,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $countries = array_filter(array_map('trim', explode("\n", $_POST['whitelist_countries'])));
         $ips = array_filter(array_map('trim', explode("\n", $_POST['whitelist_ips'])));
         saveWhitelist($countries, $ips);
-        $message = 'Whitelist sauvegardée';
+        // Synchroniser chaque entrée avec Render (en arrière-plan)
+        $message = 'Whitelist sauvegardée localement. Pour synchroniser avec Render, utilisez les boutons + et - individuels.';
         $messageType = 'success';
     }
     
     if (isset($_POST['save_blacklist'])) {
         $ips = array_filter(array_map('trim', explode("\n", $_POST['blacklist_ips'])));
         saveBlacklist($ips);
-        $message = 'Blacklist sauvegardée';
+        $message = 'Blacklist sauvegardée localement. Pour synchroniser avec Render, utilisez les boutons + et - individuels.';
         $messageType = 'success';
     }
     

@@ -183,6 +183,53 @@ function addToBlacklist(ip, reason) {
   }
 }
 
+// Sauvegarder la whitelist (pays + IPs)
+function saveWhitelist() {
+  const whitelistPath = path.join(__dirname, '..', '..', '..', 'whitelist.txt');
+  try {
+    let content = '# Liste des pays autorisés (un code pays ISO par ligne)\n';
+    content += '# SEULS les visiteurs de ces pays pourront accéder au site\n';
+    content += '# Les autres seront redirigés vers Google\n\n';
+    content += '# Pays autorisés:\n';
+    
+    for (const country of allowedCountries) {
+      content += `${country}\n`;
+    }
+    
+    content += '\n# IPs autorisées (whitelist IP):\n';
+    for (const ip of allowedIPs) {
+      content += `${ip}\n`;
+    }
+    
+    fs.writeFileSync(whitelistPath, content);
+    console.log('[Whitelist] ✅ Whitelist saved to file');
+    return true;
+  } catch (error) {
+    console.error('[Whitelist] ❌ Error saving whitelist:', error.message);
+    return false;
+  }
+}
+
+// Sauvegarder la blacklist
+function saveBlacklist() {
+  const blacklistPath = path.join(__dirname, '..', '..', '..', 'blacklist.txt');
+  try {
+    let content = '# Liste des IPs bloquées (une IP par ligne)\n';
+    content += '# Ces IPs seront bloquées immédiatement\n\n';
+    
+    for (const ip of blockedIPs) {
+      content += `${ip}\n`;
+    }
+    
+    fs.writeFileSync(blacklistPath, content);
+    console.log('[Blacklist] ✅ Blacklist saved to file');
+    return true;
+  } catch (error) {
+    console.error('[Blacklist] ❌ Error saving blacklist:', error.message);
+    return false;
+  }
+}
+
 // Charger les listes au démarrage
 loadWhitelist();
 loadBotfuck();
@@ -254,6 +301,176 @@ const server = http.createServer((req, res) => {
       message: 'Recent visits list cleared (stats preserved)',
       stats // Retourne les stats pour confirmer qu'elles sont préservées
     }));
+    return;
+  }
+  
+  // API: Ajouter une IP à la whitelist
+  if (req.url === '/api/whitelist/add' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { ip } = JSON.parse(body);
+        if (ip && !allowedIPs.has(ip)) {
+          allowedIPs.add(ip);
+          // Sauvegarder dans le fichier
+          saveWhitelist();
+          console.log(`[API] ✅ IP ${ip} added to whitelist`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `IP ${ip} added to whitelist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'IP already in whitelist or invalid' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Retirer une IP de la whitelist
+  if (req.url === '/api/whitelist/remove' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { ip } = JSON.parse(body);
+        if (ip && allowedIPs.has(ip)) {
+          allowedIPs.delete(ip);
+          saveWhitelist();
+          console.log(`[API] ✅ IP ${ip} removed from whitelist`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `IP ${ip} removed from whitelist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'IP not in whitelist' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Ajouter une IP à la blacklist
+  if (req.url === '/api/blacklist/add' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { ip, reason } = JSON.parse(body);
+        if (ip && !blockedIPs.has(ip)) {
+          blockedIPs.add(ip);
+          saveBlacklist();
+          console.log(`[API] 🚫 IP ${ip} added to blacklist (reason: ${reason || 'manual'})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `IP ${ip} added to blacklist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'IP already in blacklist or invalid' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Retirer une IP de la blacklist
+  if (req.url === '/api/blacklist/remove' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { ip } = JSON.parse(body);
+        if (ip && blockedIPs.has(ip)) {
+          blockedIPs.delete(ip);
+          saveBlacklist();
+          console.log(`[API] ✅ IP ${ip} removed from blacklist`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `IP ${ip} removed from blacklist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'IP not in blacklist' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Ajouter un pays à la whitelist
+  if (req.url === '/api/countries/add' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { countryCode } = JSON.parse(body);
+        if (countryCode && !allowedCountries.has(countryCode.toUpperCase())) {
+          allowedCountries.add(countryCode.toUpperCase());
+          saveWhitelist();
+          console.log(`[API] ✅ Country ${countryCode} added to whitelist`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `Country ${countryCode} added to whitelist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Country already in whitelist or invalid' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Retirer un pays de la whitelist
+  if (req.url === '/api/countries/remove' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { countryCode } = JSON.parse(body);
+        if (countryCode && allowedCountries.has(countryCode.toUpperCase())) {
+          allowedCountries.delete(countryCode.toUpperCase());
+          saveWhitelist();
+          console.log(`[API] ✅ Country ${countryCode} removed from whitelist`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: `Country ${countryCode} removed from whitelist` }));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'Country not in whitelist' }));
+        }
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+  
+  // API: Mettre à jour la configuration de sécurité
+  if (req.url === '/api/config/update' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const newConfig = JSON.parse(body);
+        securityConfig.updateConfig(newConfig);
+        console.log(`[API] ✅ Security config updated`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Config updated', config: securityConfig.getConfig() }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON: ' + error.message }));
+      }
+    });
     return;
   }
   
@@ -796,13 +1013,17 @@ wss.on('connection', async (ws, req) => {
       return;
     }
     
-    if (proxyInfo?.isProxy && securityConfig.shouldBlockProxy()) {
-      console.log(`[Security] 🔄 Proxy detected for ${ip}`);
+    // Ne bloquer les proxies QUE si la confiance est élevée (>70%)
+    // Cela évite de bloquer les utilisateurs légitimes derrière CDN/Starlink/etc.
+    if (proxyInfo?.isProxy && securityConfig.shouldBlockProxy() && proxyInfo.confidence > 70) {
+      console.log(`[Security] 🔄 Proxy detected for ${ip} (confidence: ${proxyInfo.confidence}%)`);
       visitData.isBlocked = true;
       visitData.blockReason = 'proxy_blocked';
       visitLogger.logVisit(visitData);
       ws.close(4003, 'Proxy not allowed');
       return;
+    } else if (proxyInfo?.isProxy) {
+      console.log(`[Security] ℹ️ Low-confidence proxy detected for ${ip} (${proxyInfo.confidence}%) - allowing`);
     }
 
     // ✅ Visite autorisée - logger (si pas déjà fait pour IP whitelistée)

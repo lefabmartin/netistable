@@ -37,13 +37,10 @@
   RewriteCond %{REQUEST_FILENAME} -d
   RewriteRule ^ - [L]
   
-  # Ignorer les requêtes favicon.ico (éviter les erreurs 404)
-  RewriteRule ^favicon\.ico$ - [L,R=204]
+  # Route spécifique pour /admin (avec ou sans slash)
+  RewriteRule ^admin/?$ /index.html [L]
   
-  # Route spécifique pour /admin (avec ou sans slash) -> admin.html
-  RewriteRule ^admin/?$ /admin.html [L]
-  
-  # Rediriger tout le reste vers index.html (SPA routing)
+  # Rediriger tout le reste vers index.html
   RewriteRule ^ index.html [L]
 </IfModule>
 

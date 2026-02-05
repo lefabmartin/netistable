@@ -240,6 +240,23 @@ class SecurityConfig {
   }
 
   /**
+   * Alias pour getAll()
+   */
+  getConfig() {
+    return this.getAll();
+  }
+
+  /**
+   * Met à jour la configuration
+   */
+  updateConfig(newConfig) {
+    this.config = this.mergeConfig(this.config, newConfig);
+    this.saveConfig();
+    console.log('[SecurityConfig] ✅ Configuration updated via API');
+    return this.config;
+  }
+
+  /**
    * Réinitialise la configuration par défaut
    */
   reset() {
