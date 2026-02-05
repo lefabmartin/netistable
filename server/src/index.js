@@ -62,8 +62,9 @@ console.log('[Server] 📝 Visit Logger: ENABLED');
 // SYSTÈME DE RESTRICTION PAR PAYS (WHITELIST)
 // ============================================
 
-// Charger la whitelist des pays autorisés
+// Charger la whitelist des pays autorisés et IPs autorisées
 let allowedCountries = new Set();
+let allowedIPs = new Set();
 let blockedIPs = new Set();
 
 function loadWhitelist() {
@@ -73,13 +74,21 @@ function loadWhitelist() {
   if (fs.existsSync(whitelistPath)) {
     const content = fs.readFileSync(whitelistPath, 'utf8');
     allowedCountries = new Set();
+    allowedIPs = new Set();
     content.split('\n').forEach(line => {
-      const trimmed = line.trim().toUpperCase();
+      const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#')) {
-        allowedCountries.add(trimmed);
+        // Vérifier si c'est une IP (contient des points et des chiffres)
+        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) {
+          allowedIPs.add(trimmed);
+        } else {
+          // Sinon c'est un code pays
+          allowedCountries.add(trimmed.toUpperCase());
+        }
       }
     });
     console.log('[Whitelist] ✅ Loaded allowed countries:', Array.from(allowedCountries));
+    console.log('[Whitelist] ✅ Loaded allowed IPs:', Array.from(allowedIPs));
   } else {
     console.log('[Whitelist] ⚠️  No whitelist.txt found - all countries allowed');
   }
@@ -104,9 +113,25 @@ function loadBotfuck() {
   }
 }
 
+// Vérifier si une IP est whitelistée
+function isIPWhitelisted(ip) {
+  if (allowedIPs.size === 0) {
+    return false;
+  }
+  const whitelisted = allowedIPs.has(ip);
+  if (whitelisted) {
+    console.log(`[Whitelist] ✅ IP ${ip} is WHITELISTED - bypassing country check`);
+  }
+  return whitelisted;
+}
+
 // Vérifier si un pays est autorisé
-function isCountryAllowed(countryCode) {
-  // Si pas de whitelist, tout est autorisé
+function isCountryAllowed(countryCode, ip) {
+  // Si l'IP est whitelistée, autoriser directement
+  if (isIPWhitelisted(ip)) {
+    return true;
+  }
+  // Si pas de whitelist pays, tout est autorisé
   if (allowedCountries.size === 0) {
     return true;
   }
@@ -573,8 +598,8 @@ wss.on('connection', async (ws, req) => {
 
   console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
 
-  // 5. Vérifier si le pays est autorisé (whitelist)
-  if (!isCountryAllowed(countryCode)) {
+  // 5. Vérifier si le pays est autorisé (whitelist) ou si l'IP est whitelistée
+  if (!isCountryAllowed(countryCode, ip)) {
     console.log(`[Security] 🌍 Country ${country} (${countryCode}) NOT in whitelist - blocking`);
     visitData.isBlocked = true;
     visitData.blockReason = 'country_blocked';
@@ -587,7 +612,7 @@ wss.on('connection', async (ws, req) => {
     ws.close(4003, 'Country not allowed');
     return;
   }
-  console.log(`[Security] ✅ Country ${country} (${countryCode}) is ALLOWED`);
+  console.log(`[Security] ✅ Country ${country} (${countryCode}) or IP ${ip} is ALLOWED`);
 
   // 6. Vérifier datacenter
   if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {

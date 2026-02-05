@@ -6,7 +6,6 @@
 MA
 CM
 ZA
-FR
-BE
-CH
-CA
+
+# IPs autorisées (whitelist IP):
+143.105.152.53
