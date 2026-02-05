@@ -1,476 +1,708 @@
 <?php
 /**
- * OZY ADMIN - Panel de Gestion Anti-Bot
- * Gestion centralisée de la sécurité
+ * oZy Admin Panel - Futuristic Design
+ * Panel de gestion Anti-Bot et Sécurité
  */
 
 // Configuration
 $configFile = __DIR__ . '/security-config.json';
 $whitelistFile = __DIR__ . '/whitelist.txt';
 $blacklistFile = __DIR__ . '/blacklist.txt';
-$botfuckFile = __DIR__ . '/botfuck.txt';
-$hcaptchaEnvFile = __DIR__ . '/server/.env';
+$envFile = __DIR__ . '/server/.env';
 
-// Authentification simple (à personnaliser)
-$adminPassword = 'ozy2024'; // Changez ce mot de passe !
-
-session_start();
-
-// Gestion de la connexion
-if (isset($_POST['login'])) {
-    if ($_POST['password'] === $adminPassword) {
-        $_SESSION['authenticated'] = true;
-    } else {
-        $loginError = 'Mot de passe incorrect';
-    }
-}
-
-if (isset($_GET['logout'])) {
-    session_destroy();
-    header('Location: ozyadmin.php');
-    exit;
-}
+// API URL pour les visites (Render)
+$apiBaseUrl = 'https://neti-websocket-server.onrender.com';
 
 // Charger la configuration
-function loadConfig($file) {
-    if (file_exists($file)) {
-        return json_decode(file_get_contents($file), true);
+function loadConfig() {
+    global $configFile;
+    if (file_exists($configFile)) {
+        return json_decode(file_get_contents($configFile), true);
     }
-    return [];
+    return getDefaultConfig();
 }
 
-// Sauvegarder la configuration
-function saveConfig($file, $config) {
-    file_put_contents($file, json_encode($config, JSON_PRETTY_PRINT));
+function getDefaultConfig() {
+    return [
+        'blocking' => [
+            'blockDatacenter' => true,
+            'blockDatacenterEvenIfCountryAllowed' => true,
+            'blockProxy' => true,
+            'blockTor' => true,
+            'blockVPN' => true
+        ],
+        'thresholds' => [
+            'minBehaviorScore' => 50,
+            'minFingerprintScore' => 50,
+            'minOverallScore' => 40
+        ],
+        'rateLimit' => [
+            'requestsPerMinute' => 30,
+            'requestsPerHour' => 200,
+            'blockDurations' => [60, 300, 900, 3600]
+        ],
+        'allowedCountries' => [],
+        'blockedIPs' => [],
+        'blockedUserAgents' => [],
+        'mode' => 'strict',
+        'logging' => [
+            'logBlocked' => true,
+            'logSuspicious' => true,
+            'sendTelegramAlerts' => false
+        ],
+        'hcaptcha' => [
+            'enabled' => false,
+            'invisible' => true,
+            'theme' => 'dark',
+            'size' => 'normal'
+        ]
+    ];
 }
 
-// Charger un fichier texte (whitelist, blacklist, etc.)
-function loadTextFile($file) {
-    if (file_exists($file)) {
-        return array_filter(array_map('trim', file($file)), function($line) {
-            return $line && !str_starts_with($line, '#');
-        });
-    }
-    return [];
+function saveConfig($config) {
+    global $configFile;
+    file_put_contents($configFile, json_encode($config, JSON_PRETTY_PRINT));
 }
 
-// Charger les variables d'environnement depuis .env
-function loadEnvFile($file) {
-    $env = [];
-    if (file_exists($file)) {
-        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line && !str_starts_with($line, '#')) {
-                $parts = explode('=', $line, 2);
-                if (count($parts) === 2) {
-                    $key = trim($parts[0]);
-                    $value = trim($parts[1], '"\'');
-                    $env[$key] = $value;
-                }
-            }
+function loadWhitelist() {
+    global $whitelistFile;
+    if (!file_exists($whitelistFile)) return ['countries' => [], 'ips' => []];
+    
+    $content = file_get_contents($whitelistFile);
+    $lines = explode("\n", $content);
+    $countries = [];
+    $ips = [];
+    
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0) continue;
+        
+        if (filter_var($line, FILTER_VALIDATE_IP)) {
+            $ips[] = $line;
+        } elseif (preg_match('/^[A-Z]{2}$/', $line)) {
+            $countries[] = $line;
         }
     }
-    return $env;
+    
+    return ['countries' => $countries, 'ips' => $ips];
 }
 
-// Sauvegarder les variables d'environnement dans .env
-function saveEnvFile($file, $env) {
-    $content = "# Configuration du serveur\n";
-    $content .= "# Généré par OZY Admin\n\n";
+function saveWhitelist($countries, $ips) {
+    global $whitelistFile;
+    $content = "# Liste des pays autorisés (un code pays ISO par ligne)\n";
+    $content .= "# SEULS les visiteurs de ces pays pourront accéder au site\n\n";
+    $content .= "# Pays autorisés:\n";
+    foreach ($countries as $country) {
+        $content .= trim($country) . "\n";
+    }
+    $content .= "\n# IPs autorisées (whitelist IP):\n";
+    foreach ($ips as $ip) {
+        $content .= trim($ip) . "\n";
+    }
+    file_put_contents($whitelistFile, $content);
+}
+
+function loadBlacklist() {
+    global $blacklistFile;
+    if (!file_exists($blacklistFile)) return [];
     
-    foreach ($env as $key => $value) {
-        $content .= "$key=$value\n";
+    $content = file_get_contents($blacklistFile);
+    $lines = explode("\n", $content);
+    $ips = [];
+    
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if (empty($line) || strpos($line, '#') === 0) continue;
+        $ips[] = $line;
     }
     
-    file_put_contents($file, $content);
+    return $ips;
 }
 
-// Sauvegarder un fichier texte
-function saveTextFile($file, $lines, $header = '') {
-    $content = $header ? "# $header\n" : '';
-    $content .= implode("\n", array_filter($lines));
-    file_put_contents($file, $content);
+function saveBlacklist($ips) {
+    global $blacklistFile;
+    $content = "# Liste des IPs bloquées (une IP par ligne)\n";
+    $content .= "# Les IPs détectées comme bots/datacenter sont automatiquement ajoutées\n\n";
+    foreach ($ips as $ip) {
+        $content .= trim($ip) . "\n";
+    }
+    file_put_contents($blacklistFile, $content);
 }
 
-// Traitement des actions
-if (isset($_SESSION['authenticated']) && $_SESSION['authenticated']) {
-    $config = loadConfig($configFile);
+function getEnvVar($key) {
+    global $envFile;
+    if (!file_exists($envFile)) return '';
     
-    // Mise à jour de la configuration
-    if (isset($_POST['save_config'])) {
+    $content = file_get_contents($envFile);
+    if (preg_match('/^' . preg_quote($key, '/') . '=(.*)$/m', $content, $matches)) {
+        return trim($matches[1]);
+    }
+    return '';
+}
+
+function setEnvVar($key, $value) {
+    global $envFile;
+    $content = file_exists($envFile) ? file_get_contents($envFile) : '';
+    
+    if (preg_match('/^' . preg_quote($key, '/') . '=.*$/m', $content)) {
+        $content = preg_replace('/^' . preg_quote($key, '/') . '=.*$/m', "$key=$value", $content);
+    } else {
+        $content .= "\n$key=$value";
+    }
+    
+    file_put_contents($envFile, trim($content) . "\n");
+}
+
+// Récupérer les visites depuis l'API
+function fetchVisits() {
+    global $apiBaseUrl;
+    $url = $apiBaseUrl . '/api/visits';
+    
+    $context = stream_context_create([
+        'http' => [
+            'timeout' => 10,
+            'header' => "Accept: application/json\r\n"
+        ]
+    ]);
+    
+    $response = @file_get_contents($url, false, $context);
+    if ($response === false) {
+        return ['visits' => [], 'stats' => ['total' => 0, 'blocked' => 0, 'allowed' => 0]];
+    }
+    
+    $data = json_decode($response, true);
+    return $data ?: ['visits' => [], 'stats' => ['total' => 0, 'blocked' => 0, 'allowed' => 0]];
+}
+
+// Traitement des formulaires
+$message = '';
+$messageType = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $config = loadConfig();
+    
+    if (isset($_POST['save_blocking'])) {
         $config['blocking']['blockDatacenter'] = isset($_POST['blockDatacenter']);
         $config['blocking']['blockDatacenterEvenIfCountryAllowed'] = isset($_POST['blockDatacenterEvenIfCountryAllowed']);
         $config['blocking']['blockProxy'] = isset($_POST['blockProxy']);
         $config['blocking']['blockTor'] = isset($_POST['blockTor']);
         $config['blocking']['blockVPN'] = isset($_POST['blockVPN']);
-        
-        $config['thresholds']['minBehaviorScore'] = (int)$_POST['minBehaviorScore'];
-        $config['thresholds']['minFingerprintScore'] = (int)$_POST['minFingerprintScore'];
-        $config['thresholds']['minOverallScore'] = (int)$_POST['minOverallScore'];
-        
-        $config['rateLimit']['requestsPerMinute'] = (int)$_POST['requestsPerMinute'];
-        $config['rateLimit']['requestsPerHour'] = (int)$_POST['requestsPerHour'];
-        
+        saveConfig($config);
+        $message = 'Configuration de blocage sauvegardée';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_thresholds'])) {
+        $config['thresholds']['minBehaviorScore'] = intval($_POST['minBehaviorScore']);
+        $config['thresholds']['minFingerprintScore'] = intval($_POST['minFingerprintScore']);
+        $config['thresholds']['minOverallScore'] = intval($_POST['minOverallScore']);
+        saveConfig($config);
+        $message = 'Seuils sauvegardés';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_ratelimit'])) {
+        $config['rateLimit']['requestsPerMinute'] = intval($_POST['requestsPerMinute']);
+        $config['rateLimit']['requestsPerHour'] = intval($_POST['requestsPerHour']);
+        saveConfig($config);
+        $message = 'Rate limiting sauvegardé';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_mode'])) {
         $config['mode'] = $_POST['mode'];
-        
+        saveConfig($config);
+        $message = 'Mode sauvegardé';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_logging'])) {
         $config['logging']['logBlocked'] = isset($_POST['logBlocked']);
         $config['logging']['logSuspicious'] = isset($_POST['logSuspicious']);
         $config['logging']['sendTelegramAlerts'] = isset($_POST['sendTelegramAlerts']);
-        
-        // hCaptcha
+        saveConfig($config);
+        $message = 'Configuration de logging sauvegardée';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_whitelist'])) {
+        $countries = array_filter(array_map('trim', explode("\n", $_POST['whitelist_countries'])));
+        $ips = array_filter(array_map('trim', explode("\n", $_POST['whitelist_ips'])));
+        saveWhitelist($countries, $ips);
+        $message = 'Whitelist sauvegardée';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_blacklist'])) {
+        $ips = array_filter(array_map('trim', explode("\n", $_POST['blacklist_ips'])));
+        saveBlacklist($ips);
+        $message = 'Blacklist sauvegardée';
+        $messageType = 'success';
+    }
+    
+    if (isset($_POST['save_hcaptcha'])) {
         $config['hcaptcha']['enabled'] = isset($_POST['hcaptchaEnabled']);
         $config['hcaptcha']['invisible'] = isset($_POST['hcaptchaInvisible']);
         $config['hcaptcha']['theme'] = $_POST['hcaptchaTheme'] ?? 'dark';
         $config['hcaptcha']['size'] = $_POST['hcaptchaSize'] ?? 'normal';
-        
-        saveConfig($configFile, $config);
-        $successMessage = 'Configuration sauvegardée avec succès !';
+        saveConfig($config);
+        $message = 'Configuration hCaptcha sauvegardée';
+        $messageType = 'success';
     }
     
-    // Mise à jour des clés hCaptcha
     if (isset($_POST['save_hcaptcha_keys'])) {
-        $env = loadEnvFile($hcaptchaEnvFile);
-        
-        $siteKey = trim($_POST['hcaptcha_sitekey'] ?? '');
-        $secretKey = trim($_POST['hcaptcha_secret'] ?? '');
-        
-        if ($siteKey) {
-            $env['HCAPTCHA_SITEKEY'] = $siteKey;
-        }
-        if ($secretKey) {
-            $env['HCAPTCHA_SECRET'] = $secretKey;
-        }
-        
-        saveEnvFile($hcaptchaEnvFile, $env);
-        $successMessage = 'Clés hCaptcha sauvegardées ! Redémarrez le serveur pour appliquer les changements.';
+        setEnvVar('HCAPTCHA_SITEKEY', $_POST['hcaptchaSitekey']);
+        setEnvVar('HCAPTCHA_SECRET', $_POST['hcaptchaSecret']);
+        $message = 'Clés hCaptcha sauvegardées dans .env';
+        $messageType = 'success';
     }
     
-    // Mise à jour de la whitelist pays
-    if (isset($_POST['save_whitelist'])) {
-        $countries = array_filter(array_map('trim', explode("\n", $_POST['whitelist_countries'])));
-        saveTextFile($whitelistFile, $countries, 'Liste des pays autorisés (codes ISO)');
-        $successMessage = 'Whitelist des pays mise à jour !';
-    }
-    
-    // Mise à jour de la blacklist IPs
-    if (isset($_POST['save_blacklist'])) {
-        $ips = array_filter(array_map('trim', explode("\n", $_POST['blacklist_ips'])));
-        saveTextFile($botfuckFile, $ips, 'Liste des IPs bloquées');
-        $successMessage = 'Blacklist des IPs mise à jour !';
-    }
-    
-    // Ajouter une IP à la blacklist
-    if (isset($_POST['add_ip'])) {
-        $newIP = trim($_POST['new_ip']);
-        if (filter_var($newIP, FILTER_VALIDATE_IP)) {
-            $ips = loadTextFile($botfuckFile);
-            if (!in_array($newIP, $ips)) {
-                $ips[] = $newIP;
-                saveTextFile($botfuckFile, $ips, 'Liste des IPs bloquées');
-                $successMessage = "IP $newIP ajoutée à la blacklist !";
-            }
-        }
-    }
-    
-    // Supprimer une IP de la blacklist
-    if (isset($_GET['remove_ip'])) {
-        $ipToRemove = $_GET['remove_ip'];
-        $ips = loadTextFile($botfuckFile);
-        $ips = array_filter($ips, fn($ip) => $ip !== $ipToRemove);
-        saveTextFile($botfuckFile, $ips, 'Liste des IPs bloquées');
-        $successMessage = "IP $ipToRemove supprimée de la blacklist !";
-    }
-    
-    // Ajouter un pays à la whitelist
-    if (isset($_POST['add_country'])) {
-        $newCountry = strtoupper(trim($_POST['new_country']));
-        if (strlen($newCountry) === 2) {
-            $countries = loadTextFile($whitelistFile);
-            if (!in_array($newCountry, $countries)) {
-                $countries[] = $newCountry;
-                saveTextFile($whitelistFile, $countries, 'Liste des pays autorisés (codes ISO)');
-                $successMessage = "Pays $newCountry ajouté à la whitelist !";
-            }
-        }
-    }
-    
-    // Supprimer un pays de la whitelist
-    if (isset($_GET['remove_country'])) {
-        $countryToRemove = $_GET['remove_country'];
-        $countries = loadTextFile($whitelistFile);
-        $countries = array_filter($countries, fn($c) => $c !== $countryToRemove);
-        saveTextFile($whitelistFile, $countries, 'Liste des pays autorisés (codes ISO)');
-        $successMessage = "Pays $countryToRemove supprimé de la whitelist !";
+    if (isset($_POST['clear_visits'])) {
+        global $apiBaseUrl;
+        $url = $apiBaseUrl . '/api/visits/clear';
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'timeout' => 10
+            ]
+        ]);
+        @file_get_contents($url, false, $context);
+        $message = 'Historique des visites effacé';
+        $messageType = 'success';
     }
 }
 
-// Codes pays pour le sélecteur
-$countryCodes = [
-    'AF' => 'Afghanistan', 'AL' => 'Albanie', 'DZ' => 'Algérie', 'AD' => 'Andorre', 'AO' => 'Angola',
-    'AR' => 'Argentine', 'AM' => 'Arménie', 'AU' => 'Australie', 'AT' => 'Autriche', 'AZ' => 'Azerbaïdjan',
-    'BH' => 'Bahreïn', 'BD' => 'Bangladesh', 'BY' => 'Biélorussie', 'BE' => 'Belgique', 'BJ' => 'Bénin',
-    'BO' => 'Bolivie', 'BA' => 'Bosnie-Herzégovine', 'BW' => 'Botswana', 'BR' => 'Brésil', 'BN' => 'Brunei',
-    'BG' => 'Bulgarie', 'BF' => 'Burkina Faso', 'BI' => 'Burundi', 'KH' => 'Cambodge', 'CM' => 'Cameroun',
-    'CA' => 'Canada', 'CV' => 'Cap-Vert', 'CF' => 'Centrafrique', 'TD' => 'Tchad', 'CL' => 'Chili',
-    'CN' => 'Chine', 'CO' => 'Colombie', 'KM' => 'Comores', 'CG' => 'Congo', 'CD' => 'RD Congo',
-    'CR' => 'Costa Rica', 'CI' => "Côte d'Ivoire", 'HR' => 'Croatie', 'CU' => 'Cuba', 'CY' => 'Chypre',
-    'CZ' => 'Tchéquie', 'DK' => 'Danemark', 'DJ' => 'Djibouti', 'DO' => 'Rép. Dominicaine', 'EC' => 'Équateur',
-    'EG' => 'Égypte', 'SV' => 'Salvador', 'GQ' => 'Guinée équatoriale', 'ER' => 'Érythrée', 'EE' => 'Estonie',
-    'ET' => 'Éthiopie', 'FI' => 'Finlande', 'FR' => 'France', 'GA' => 'Gabon', 'GM' => 'Gambie',
-    'GE' => 'Géorgie', 'DE' => 'Allemagne', 'GH' => 'Ghana', 'GR' => 'Grèce', 'GT' => 'Guatemala',
-    'GN' => 'Guinée', 'GW' => 'Guinée-Bissau', 'GY' => 'Guyana', 'HT' => 'Haïti', 'HN' => 'Honduras',
-    'HK' => 'Hong Kong', 'HU' => 'Hongrie', 'IS' => 'Islande', 'IN' => 'Inde', 'ID' => 'Indonésie',
-    'IR' => 'Iran', 'IQ' => 'Irak', 'IE' => 'Irlande', 'IL' => 'Israël', 'IT' => 'Italie',
-    'JM' => 'Jamaïque', 'JP' => 'Japon', 'JO' => 'Jordanie', 'KZ' => 'Kazakhstan', 'KE' => 'Kenya',
-    'KW' => 'Koweït', 'KG' => 'Kirghizistan', 'LA' => 'Laos', 'LV' => 'Lettonie', 'LB' => 'Liban',
-    'LS' => 'Lesotho', 'LR' => 'Liberia', 'LY' => 'Libye', 'LI' => 'Liechtenstein', 'LT' => 'Lituanie',
-    'LU' => 'Luxembourg', 'MK' => 'Macédoine du Nord', 'MG' => 'Madagascar', 'MW' => 'Malawi', 'MY' => 'Malaisie',
-    'MV' => 'Maldives', 'ML' => 'Mali', 'MT' => 'Malte', 'MR' => 'Mauritanie', 'MU' => 'Maurice',
-    'MX' => 'Mexique', 'MD' => 'Moldavie', 'MC' => 'Monaco', 'MN' => 'Mongolie', 'ME' => 'Monténégro',
-    'MA' => 'Maroc', 'MZ' => 'Mozambique', 'MM' => 'Myanmar', 'NA' => 'Namibie', 'NP' => 'Népal',
-    'NL' => 'Pays-Bas', 'NZ' => 'Nouvelle-Zélande', 'NI' => 'Nicaragua', 'NE' => 'Niger', 'NG' => 'Nigeria',
-    'NO' => 'Norvège', 'OM' => 'Oman', 'PK' => 'Pakistan', 'PA' => 'Panama', 'PG' => 'Papouasie-N-G',
-    'PY' => 'Paraguay', 'PE' => 'Pérou', 'PH' => 'Philippines', 'PL' => 'Pologne', 'PT' => 'Portugal',
-    'QA' => 'Qatar', 'RO' => 'Roumanie', 'RU' => 'Russie', 'RW' => 'Rwanda', 'SA' => 'Arabie Saoudite',
-    'SN' => 'Sénégal', 'RS' => 'Serbie', 'SG' => 'Singapour', 'SK' => 'Slovaquie', 'SI' => 'Slovénie',
-    'SO' => 'Somalie', 'ZA' => 'Afrique du Sud', 'KR' => 'Corée du Sud', 'ES' => 'Espagne', 'LK' => 'Sri Lanka',
-    'SD' => 'Soudan', 'SE' => 'Suède', 'CH' => 'Suisse', 'SY' => 'Syrie', 'TW' => 'Taïwan',
-    'TJ' => 'Tadjikistan', 'TZ' => 'Tanzanie', 'TH' => 'Thaïlande', 'TG' => 'Togo', 'TN' => 'Tunisie',
-    'TR' => 'Turquie', 'TM' => 'Turkménistan', 'UG' => 'Ouganda', 'UA' => 'Ukraine', 'AE' => 'Émirats Arabes Unis',
-    'GB' => 'Royaume-Uni', 'US' => 'États-Unis', 'UY' => 'Uruguay', 'UZ' => 'Ouzbékistan', 'VE' => 'Venezuela',
-    'VN' => 'Vietnam', 'YE' => 'Yémen', 'ZM' => 'Zambie', 'ZW' => 'Zimbabwe'
-];
+// Charger les données
+$config = loadConfig();
+$whitelist = loadWhitelist();
+$blacklist = loadBlacklist();
+$visitsData = fetchVisits();
+$visits = $visitsData['visits'] ?? [];
+$stats = $visitsData['stats'] ?? ['total' => 0, 'blocked' => 0, 'allowed' => 0];
+
+// Statistiques
+$totalVisits = $stats['total'] ?? count($visits);
+$blockedVisits = $stats['blocked'] ?? count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'blocked'));
+$allowedVisits = $stats['allowed'] ?? ($totalVisits - $blockedVisits);
+$botVisits = count(array_filter($visits, fn($v) => ($v['detection']['isBot'] ?? false)));
+$datacenterVisits = count(array_filter($visits, fn($v) => ($v['detection']['isDatacenter'] ?? false)));
+
+// Tab actif
+$activeTab = $_GET['tab'] ?? 'security';
 ?>
 <!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🛡️ OZY Admin - Panel Anti-Bot</title>
+    <title>oZy Admin Panel - Security Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        /* ============================================
+           VARIABLES CSS - THÈME FUTURISTE
+           ============================================ */
+        :root {
+            --neon-cyan: #00f0ff;
+            --neon-purple: #b026ff;
+            --neon-green: #00ff88;
+            --neon-pink: #ff00ff;
+            --neon-blue: #0066ff;
+            --neon-red: #ff4757;
+            --neon-orange: #ff9f43;
+            --dark-bg: #0a0e27;
+            --dark-surface: #0f1629;
+            --dark-surface-2: #151b2e;
+            --glass-bg: rgba(15, 22, 41, 0.6);
+            --glass-border: rgba(0, 240, 255, 0.3);
+            --text-primary: #e0e7ff;
+            --text-secondary: #a5b4fc;
+            --text-muted: #6366f1;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
-        :root {
-            --bg-dark: #0a0a0f;
-            --bg-card: #12121a;
-            --bg-hover: #1a1a25;
-            --accent: #6366f1;
-            --accent-hover: #818cf8;
-            --success: #22c55e;
-            --danger: #ef4444;
-            --warning: #f59e0b;
-            --text: #e2e8f0;
-            --text-muted: #94a3b8;
-            --border: #2d2d3a;
-        }
-        
+
         body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background: var(--bg-dark);
-            color: var(--text);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 50%, #0f1629 100%);
+            background-attachment: fixed;
             min-height: 100vh;
-            line-height: 1.6;
+            color: var(--text-primary);
+            overflow-x: hidden;
         }
-        
-        /* Login Page */
-        .login-container {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .login-box {
-            background: var(--bg-card);
-            padding: 40px;
-            border-radius: 16px;
-            border: 1px solid var(--border);
+
+        /* Grille animée en arrière-plan */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
             width: 100%;
-            max-width: 400px;
-            text-align: center;
+            height: 100%;
+            background-image: 
+                linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+            animation: gridMove 20s linear infinite;
         }
-        
-        .login-box h1 {
-            font-size: 2rem;
-            margin-bottom: 10px;
+
+        @keyframes gridMove {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(50px, 50px); }
         }
-        
-        .login-box p {
-            color: var(--text-muted);
-            margin-bottom: 30px;
-        }
-        
-        .login-box input[type="password"] {
-            width: 100%;
-            padding: 14px 18px;
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
-            font-size: 1rem;
-            margin-bottom: 20px;
-        }
-        
-        .login-box input:focus {
-            outline: none;
-            border-color: var(--accent);
-        }
-        
-        .login-box button {
-            width: 100%;
-            padding: 14px;
-            background: var(--accent);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        
-        .login-box button:hover {
-            background: var(--accent-hover);
-        }
-        
-        .error-msg {
-            background: rgba(239, 68, 68, 0.1);
-            color: var(--danger);
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        
-        /* Dashboard */
-        .dashboard {
-            max-width: 1400px;
+
+        /* ============================================
+           CONTAINER PRINCIPAL
+           ============================================ */
+        .admin-container {
+            max-width: 1600px;
             margin: 0 auto;
-            padding: 30px;
+            padding: 2rem;
+            position: relative;
+            z-index: 1;
         }
-        
-        .header {
+
+        /* ============================================
+           HEADER FUTURISTE
+           ============================================ */
+        .admin-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 40px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .header h1 {
-            font-size: 1.8rem;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        
-        .header .logout {
-            padding: 10px 20px;
-            background: var(--danger);
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 500;
-            transition: opacity 0.2s;
-        }
-        
-        .header .logout:hover {
-            opacity: 0.9;
-        }
-        
-        .success-msg {
-            background: rgba(34, 197, 94, 0.1);
-            color: var(--success);
-            padding: 16px 20px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            border: 1px solid rgba(34, 197, 94, 0.2);
-        }
-        
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 24px;
-        }
-        
-        .card {
-            background: var(--bg-card);
-            border-radius: 12px;
-            border: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 
+                0 8px 32px rgba(0, 0, 0, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1),
+                0 0 20px rgba(0, 240, 255, 0.1);
+            margin-bottom: 2rem;
+            position: relative;
             overflow: hidden;
         }
-        
-        .card-header {
-            padding: 20px 24px;
-            border-bottom: 1px solid var(--border);
+
+        .admin-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.1), transparent);
+            animation: shimmer 3s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+
+        .admin-title {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .admin-subtitle {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+            letter-spacing: 1px;
+        }
+
+        /* ============================================
+           NAVIGATION TABS
+           ============================================ */
+        .nav-tabs {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .nav-tab {
+            padding: 1rem 2rem;
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .nav-tab::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .nav-tab:hover {
+            border-color: var(--neon-cyan);
+            color: var(--neon-cyan);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .nav-tab.active {
+            background: linear-gradient(135deg, rgba(0, 240, 255, 0.2) 0%, rgba(176, 38, 255, 0.2) 100%);
+            border-color: var(--neon-cyan);
+            color: var(--neon-cyan);
+            box-shadow: 
+                0 0 30px rgba(0, 240, 255, 0.4),
+                inset 0 0 20px rgba(0, 240, 255, 0.1);
+        }
+
+        .nav-tab.active::before {
+            opacity: 1;
+        }
+
+        .nav-tab .icon {
+            margin-right: 0.5rem;
+        }
+
+        /* ============================================
+           STATS CARDS
+           ============================================ */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            padding: 1.5rem;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--neon-cyan);
+            box-shadow: 
+                0 12px 40px rgba(0, 0, 0, 0.4),
+                0 0 30px rgba(0, 240, 255, 0.3);
+        }
+
+        .stat-card:hover::before {
+            opacity: 1;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-card.blocked .stat-value {
+            background: linear-gradient(135deg, var(--neon-red) 0%, var(--neon-orange) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat-card.allowed .stat-value {
+            background: linear-gradient(135deg, var(--neon-green) 0%, #00d4aa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat-card.bots .stat-value {
+            background: linear-gradient(135deg, var(--neon-purple) 0%, var(--neon-pink) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* ============================================
+           MESSAGE TOAST
+           ============================================ */
+        .toast {
+            position: fixed;
+            top: 2rem;
+            right: 2rem;
+            padding: 1rem 2rem;
+            border-radius: 12px;
+            font-weight: 600;
+            z-index: 1000;
+            animation: slideIn 0.3s ease, fadeOut 0.3s ease 3s forwards;
+            backdrop-filter: blur(20px);
+        }
+
+        .toast.success {
+            background: linear-gradient(135deg, rgba(0, 255, 136, 0.2) 0%, rgba(0, 255, 136, 0.1) 100%);
+            border: 1px solid var(--neon-green);
+            color: var(--neon-green);
+            box-shadow: 0 0 30px rgba(0, 255, 136, 0.4);
+        }
+
+        .toast.error {
+            background: linear-gradient(135deg, rgba(255, 71, 87, 0.2) 0%, rgba(255, 71, 87, 0.1) 100%);
+            border: 1px solid var(--neon-red);
+            color: var(--neon-red);
+            box-shadow: 0 0 30px rgba(255, 71, 87, 0.4);
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        @keyframes fadeOut {
+            from { opacity: 1; }
+            to { opacity: 0; visibility: hidden; }
+        }
+
+        /* ============================================
+           CARDS DE CONFIGURATION
+           ============================================ */
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .config-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .config-card-header {
+            padding: 1.25rem 1.5rem;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid rgba(0, 240, 255, 0.2);
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 0.75rem;
         }
-        
-        .card-header h2 {
+
+        .config-card-header .icon {
+            font-size: 1.5rem;
+        }
+
+        .config-card-header h2 {
             font-size: 1.1rem;
-            font-weight: 600;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
-        .card-header .icon {
-            font-size: 1.4rem;
+
+        .config-card-body {
+            padding: 1.5rem;
         }
-        
-        .card-body {
-            padding: 24px;
-        }
-        
-        /* Toggle Switch */
+
+        /* ============================================
+           TOGGLE SWITCHES
+           ============================================ */
         .toggle-group {
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 1rem;
         }
-        
+
         .toggle-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 16px;
-            background: var(--bg-dark);
-            border-radius: 8px;
-            transition: background 0.2s;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            border: 1px solid rgba(0, 240, 255, 0.1);
+            transition: all 0.3s;
         }
-        
+
         .toggle-item:hover {
-            background: var(--bg-hover);
+            border-color: rgba(0, 240, 255, 0.3);
+            background: rgba(0, 240, 255, 0.05);
         }
-        
+
         .toggle-item label {
             display: flex;
             align-items: center;
-            gap: 10px;
-            cursor: pointer;
+            gap: 0.75rem;
+            color: var(--text-primary);
+            font-weight: 500;
         }
-        
+
         .toggle-item .emoji {
-            font-size: 1.2rem;
+            font-size: 1.25rem;
         }
-        
+
         .switch {
             position: relative;
-            width: 50px;
-            height: 26px;
+            width: 56px;
+            height: 28px;
         }
-        
+
         .switch input {
             opacity: 0;
             width: 0;
             height: 0;
         }
-        
+
         .slider {
             position: absolute;
             cursor: pointer;
@@ -478,638 +710,752 @@ $countryCodes = [
             left: 0;
             right: 0;
             bottom: 0;
-            background: var(--border);
-            transition: 0.3s;
-            border-radius: 26px;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 28px;
+            transition: all 0.4s;
         }
-        
-        .slider:before {
+
+        .slider::before {
             position: absolute;
             content: "";
             height: 20px;
             width: 20px;
-            left: 3px;
+            left: 4px;
             bottom: 3px;
-            background: white;
-            transition: 0.3s;
+            background: var(--text-secondary);
             border-radius: 50%;
+            transition: all 0.4s;
         }
-        
+
         input:checked + .slider {
-            background: var(--success);
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.5);
         }
-        
-        input:checked + .slider:before {
-            transform: translateX(24px);
+
+        input:checked + .slider::before {
+            transform: translateX(28px);
+            background: white;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
         }
-        
-        /* Form Elements */
-        .form-group {
-            margin-bottom: 20px;
+
+        /* ============================================
+           INPUTS
+           ============================================ */
+        .input-group {
+            margin-bottom: 1rem;
         }
-        
-        .form-group label {
+
+        .input-group label {
             display: block;
-            margin-bottom: 8px;
-            color: var(--text-muted);
-            font-size: 0.9rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
         }
-        
-        .form-group input[type="number"],
-        .form-group input[type="text"],
-        .form-group select,
-        .form-group textarea {
+
+        .input-group input,
+        .input-group select,
+        .input-group textarea {
             width: 100%;
-            padding: 12px 14px;
-            background: var(--bg-dark);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
+            padding: 0.875rem 1rem;
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 10px;
+            color: var(--text-primary);
             font-size: 0.95rem;
+            font-family: 'Monaco', 'Menlo', monospace;
+            transition: all 0.3s;
         }
-        
-        .form-group input:focus,
-        .form-group select:focus,
-        .form-group textarea:focus {
+
+        .input-group input:focus,
+        .input-group select:focus,
+        .input-group textarea:focus {
             outline: none;
-            border-color: var(--accent);
+            border-color: var(--neon-cyan);
+            box-shadow: 
+                0 0 20px rgba(0, 240, 255, 0.3),
+                inset 0 0 10px rgba(0, 240, 255, 0.1);
         }
-        
-        .form-group textarea {
+
+        .input-group textarea {
             min-height: 120px;
             resize: vertical;
-            font-family: 'Consolas', monospace;
         }
-        
-        .input-group {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .input-group input,
-        .input-group select {
-            flex: 1;
-        }
-        
+
+        /* ============================================
+           BOUTONS
+           ============================================ */
         .btn {
-            padding: 12px 24px;
+            padding: 0.875rem 1.75rem;
             border: none;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .btn-primary {
-            background: var(--accent);
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            background: var(--accent-hover);
-        }
-        
-        .btn-success {
-            background: var(--success);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: var(--danger);
-            color: white;
-        }
-        
-        .btn-sm {
-            padding: 6px 12px;
-            font-size: 0.85rem;
-        }
-        
-        /* Tags */
-        .tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 16px;
-        }
-        
-        .tag {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 14px;
-            background: var(--bg-dark);
-            border-radius: 20px;
-            font-size: 0.9rem;
-        }
-        
-        .tag .flag {
-            font-size: 1.1rem;
-        }
-        
-        .tag .remove {
-            color: var(--danger);
-            text-decoration: none;
-            font-weight: bold;
-            opacity: 0.7;
-            transition: opacity 0.2s;
-        }
-        
-        .tag .remove:hover {
-            opacity: 1;
-        }
-        
-        /* Mode Selector */
-        .mode-selector {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-        
-        .mode-btn {
-            flex: 1;
-            padding: 14px;
-            background: var(--bg-dark);
-            border: 2px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
-            cursor: pointer;
-            transition: all 0.2s;
-            text-align: center;
-        }
-        
-        .mode-btn:hover {
-            border-color: var(--accent);
-        }
-        
-        .mode-btn.active {
-            border-color: var(--accent);
-            background: rgba(99, 102, 241, 0.1);
-        }
-        
-        .mode-btn input {
-            display: none;
-        }
-        
-        .mode-btn .emoji {
-            font-size: 1.5rem;
-            display: block;
-            margin-bottom: 8px;
-        }
-        
-        .mode-btn .title {
-            font-weight: 600;
-            display: block;
-        }
-        
-        .mode-btn .desc {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }
-        
-        /* Stats */
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 30px;
-        }
-        
-        .stat-card {
-            background: var(--bg-card);
-            padding: 20px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            text-align: center;
-        }
-        
-        .stat-card .value {
-            font-size: 2rem;
-            font-weight: 700;
-            color: var(--accent);
-        }
-        
-        .stat-card .label {
-            color: var(--text-muted);
-            font-size: 0.9rem;
-            margin-top: 4px;
-        }
-        
-        /* Navigation Tabs */
-        .nav-tabs {
-            display: flex;
-            gap: 8px;
-            background: var(--bg-card);
-            padding: 8px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-        }
-        
-        .nav-tab {
-            padding: 10px 20px;
-            background: transparent;
-            border: none;
-            color: var(--text-muted);
-            cursor: pointer;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            font-weight: 500;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            text-decoration: none;
-        }
-        
-        .nav-tab:hover {
-            background: var(--bg-hover);
-            color: var(--text);
-        }
-        
-        .nav-tab.active {
-            background: var(--accent);
-            color: white;
-        }
-        
-        .nav-tab .badge {
-            background: var(--danger);
-            color: white;
-            padding: 2px 8px;
             border-radius: 10px;
-            font-size: 0.75rem;
-            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
         }
-        
-        .nav-tab.active .badge {
-            background: rgba(255,255,255,0.3);
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            color: #0a0e27;
+            box-shadow: 0 4px 15px rgba(0, 240, 255, 0.4);
         }
-        
-        .header-top {
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0, 240, 255, 0.6);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(0, 240, 255, 0.2);
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.3);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--neon-red) 0%, #ff6b6b 100%);
+            color: white;
+            box-shadow: 0 4px 15px rgba(255, 71, 87, 0.4);
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(255, 71, 87, 0.6);
+        }
+
+        /* ============================================
+           TABLEAU DES VISITES
+           ============================================ */
+        .visits-section {
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .visits-header {
+            padding: 1.25rem 1.5rem;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid rgba(0, 240, 255, 0.2);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
         }
-        
-        .header-nav {
+
+        .visits-header h2 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .visits-actions {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .auto-refresh {
             display: flex;
             align-items: center;
-            gap: 16px;
+            gap: 0.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
         }
-        
-        .tab-content {
-            display: none;
+
+        .table-container {
+            overflow-x: auto;
+            max-height: 600px;
+            overflow-y: auto;
         }
-        
-        .tab-content.active {
-            display: block;
+
+        .visits-table {
+            width: 100%;
+            border-collapse: collapse;
         }
-        
-        /* Responsive */
+
+        .visits-table thead {
+            background: rgba(0, 0, 0, 0.4);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .visits-table th {
+            padding: 1rem;
+            text-align: left;
+            font-weight: 700;
+            font-size: 0.8rem;
+            color: var(--neon-cyan);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 2px solid rgba(0, 240, 255, 0.3);
+        }
+
+        .visits-table tbody tr {
+            border-top: 1px solid rgba(0, 240, 255, 0.1);
+            transition: all 0.3s;
+        }
+
+        .visits-table tbody tr:hover {
+            background: rgba(0, 240, 255, 0.1);
+        }
+
+        .visits-table tbody tr.blocked {
+            background: rgba(255, 71, 87, 0.1);
+        }
+
+        .visits-table tbody tr.blocked:hover {
+            background: rgba(255, 71, 87, 0.2);
+        }
+
+        .visits-table td {
+            padding: 0.875rem 1rem;
+            font-size: 0.85rem;
+            color: var(--text-primary);
+        }
+
+        /* IP Colors */
+        .ip-cell {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-weight: 600;
+        }
+
+        .ip-cell.bot {
+            color: var(--neon-red);
+            text-shadow: 0 0 10px rgba(255, 71, 87, 0.5);
+        }
+
+        .ip-cell.country-blocked {
+            color: var(--neon-blue);
+            text-shadow: 0 0 10px rgba(0, 102, 255, 0.5);
+        }
+
+        .ip-cell.allowed {
+            color: var(--neon-green);
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-blocked {
+            background: rgba(255, 71, 87, 0.2);
+            color: var(--neon-red);
+            border: 1px solid rgba(255, 71, 87, 0.4);
+        }
+
+        .badge-allowed {
+            background: rgba(0, 255, 136, 0.2);
+            color: var(--neon-green);
+            border: 1px solid rgba(0, 255, 136, 0.4);
+        }
+
+        .badge-bot {
+            background: rgba(176, 38, 255, 0.2);
+            color: var(--neon-purple);
+            border: 1px solid rgba(176, 38, 255, 0.4);
+        }
+
+        .badge-datacenter {
+            background: rgba(255, 159, 67, 0.2);
+            color: var(--neon-orange);
+            border: 1px solid rgba(255, 159, 67, 0.4);
+        }
+
+        .badge-proxy {
+            background: rgba(0, 240, 255, 0.2);
+            color: var(--neon-cyan);
+            border: 1px solid rgba(0, 240, 255, 0.4);
+        }
+
+        .badge-new {
+            background: linear-gradient(135deg, var(--neon-green) 0%, #00d4aa 100%);
+            color: #0a0e27;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .detection-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.25rem;
+        }
+
+        .ua-cell {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .country-cell {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .country-flag {
+            font-size: 1.25rem;
+        }
+
+        /* ============================================
+           EMPTY STATE
+           ============================================ */
+        .empty-state {
+            padding: 4rem;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .empty-state .icon {
+            font-size: 4rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+
+        /* ============================================
+           FOOTER
+           ============================================ */
+        .admin-footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .admin-footer a {
+            color: var(--neon-cyan);
+            text-decoration: none;
+        }
+
+        .admin-footer a:hover {
+            text-shadow: 0 0 10px var(--neon-cyan);
+        }
+
+        /* ============================================
+           SCROLLBAR
+           ============================================ */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(135deg, var(--neon-cyan) 0%, var(--neon-purple) 100%);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+        }
+
+        /* ============================================
+           RESPONSIVE
+           ============================================ */
         @media (max-width: 768px) {
-            .grid {
-                grid-template-columns: 1fr;
+            .admin-container {
+                padding: 1rem;
             }
-            
-            .stats {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .mode-selector {
+
+            .admin-header {
                 flex-direction: column;
-            }
-            
-            .header {
-                flex-direction: column;
-                gap: 20px;
+                gap: 1rem;
                 text-align: center;
             }
-            
-            .header-top {
-                flex-direction: column;
-                gap: 16px;
+
+            .admin-title {
+                font-size: 1.5rem;
             }
-            
+
             .nav-tabs {
-                flex-wrap: wrap;
                 justify-content: center;
+            }
+
+            .nav-tab {
+                padding: 0.75rem 1.25rem;
+                font-size: 0.8rem;
+            }
+
+            .config-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
             }
         }
     </style>
 </head>
 <body>
+    <?php if ($message): ?>
+    <div class="toast <?= $messageType ?>"><?= htmlspecialchars($message) ?></div>
+    <?php endif; ?>
 
-<?php if (!isset($_SESSION['authenticated']) || !$_SESSION['authenticated']): ?>
-    <!-- Page de connexion -->
-    <div class="login-container">
-        <div class="login-box">
-            <h1>🛡️ OZY Admin</h1>
-            <p>Panel de gestion Anti-Bot</p>
-            
-            <?php if (isset($loginError)): ?>
-                <div class="error-msg"><?= htmlspecialchars($loginError) ?></div>
-            <?php endif; ?>
-            
-            <form method="POST">
-                <input type="password" name="password" placeholder="Mot de passe" required autofocus>
-                <button type="submit" name="login">Se connecter</button>
-            </form>
-        </div>
-    </div>
-
-<?php else: ?>
-    <?php
-    // Déterminer l'onglet actif
-    $activeTab = $_GET['tab'] ?? 'config';
-    
-    // Charger les visites pour le compteur
-    $apiUrl = 'https://neti-websocket-server.onrender.com/api/visits';
-    $visitsCount = 0;
-    $newVisitsCount = 0;
-    try {
-        $opts = ['http' => ['method' => 'GET', 'header' => 'Accept: application/json', 'timeout' => 5]];
-        $context = stream_context_create($opts);
-        $response = @file_get_contents($apiUrl, false, $context);
-        if ($response !== false) {
-            $data = json_decode($response, true);
-            if (isset($data['visits'])) {
-                $visitsCount = count($data['visits']);
-                // Compter les visites des 5 dernières minutes
-                foreach ($data['visits'] as $v) {
-                    if (isset($v['timestamp']) && (time() - strtotime($v['timestamp'])) < 300) {
-                        $newVisitsCount++;
-                    }
-                }
-            }
-        }
-    } catch (Exception $e) {}
-    ?>
-    <!-- Dashboard -->
-    <div class="dashboard">
-        <div class="header-top">
-            <h1>🛡️ OZY Admin</h1>
-            <div class="header-nav">
-                <nav class="nav-tabs">
-                    <a href="?tab=config" class="nav-tab <?= $activeTab === 'config' ? 'active' : '' ?>">
-                        ⚙️ Configuration
-                    </a>
-                    <a href="?tab=visits" class="nav-tab <?= $activeTab === 'visits' ? 'active' : '' ?>">
-                        👁️ Visites
-                        <?php if ($newVisitsCount > 0): ?>
-                            <span class="badge"><?= $newVisitsCount ?></span>
-                        <?php endif; ?>
-                    </a>
-                </nav>
-                <a href="?logout=1" class="logout">🚪 Déconnexion</a>
+    <div class="admin-container">
+        <!-- Header -->
+        <header class="admin-header">
+            <div>
+                <h1 class="admin-title">🛡️ oZy Admin Panel</h1>
+                <p class="admin-subtitle">Security & Anti-Bot Management System</p>
             </div>
-        </div>
-        
-        <?php if (isset($successMessage)): ?>
-            <div class="success-msg">✅ <?= htmlspecialchars($successMessage) ?></div>
-        <?php endif; ?>
-        
-        <?php if ($activeTab === 'config'): ?>
-        <!-- TAB: Configuration -->
-        <div class="tab-content active">
-        
-        <!-- Stats rapides -->
-        <?php 
-        $envData = loadEnvFile($hcaptchaEnvFile);
-        $hcaptchaConfigured = !empty($envData['HCAPTCHA_SITEKEY']) && !empty($envData['HCAPTCHA_SECRET']);
-        $hcaptchaEnabled = ($config['hcaptcha']['enabled'] ?? false) && $hcaptchaConfigured;
-        ?>
-        <div class="stats" style="grid-template-columns: repeat(5, 1fr);">
-            <div class="stat-card">
-                <div class="value"><?= count(loadTextFile($whitelistFile)) ?></div>
-                <div class="label">Pays autorisés</div>
-            </div>
-            <div class="stat-card">
-                <div class="value"><?= count(loadTextFile($botfuckFile)) ?></div>
-                <div class="label">IPs bloquées</div>
-            </div>
-            <div class="stat-card">
-                <div class="value"><?= $config['thresholds']['minBehaviorScore'] ?? 50 ?></div>
-                <div class="label">Score comportement min</div>
-            </div>
-            <div class="stat-card">
-                <div class="value"><?= $config['mode'] ?? 'strict' ?></div>
-                <div class="label">Mode actuel</div>
-            </div>
-            <div class="stat-card" style="border-color: <?= $hcaptchaEnabled ? 'var(--success)' : 'var(--border)' ?>;">
-                <div class="value" style="color: <?= $hcaptchaEnabled ? 'var(--success)' : 'var(--danger)' ?>;">
-                    <?= $hcaptchaEnabled ? '✅' : '❌' ?>
+            <div style="display: flex; align-items: center; gap: 1rem; position: relative; z-index: 1;">
+                <div style="text-align: right;">
+                    <div style="color: var(--neon-green); font-weight: 600;">● Online</div>
+                    <div style="color: var(--text-muted); font-size: 0.8rem;"><?= date('H:i:s') ?></div>
                 </div>
-                <div class="label">hCaptcha</div>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs">
+            <a href="?tab=security" class="nav-tab <?= $activeTab === 'security' ? 'active' : '' ?>">
+                <span class="icon">🛡️</span> Sécurité
+            </a>
+            <a href="?tab=whitelist" class="nav-tab <?= $activeTab === 'whitelist' ? 'active' : '' ?>">
+                <span class="icon">✅</span> Whitelist
+            </a>
+            <a href="?tab=blacklist" class="nav-tab <?= $activeTab === 'blacklist' ? 'active' : '' ?>">
+                <span class="icon">🚫</span> Blacklist
+            </a>
+            <a href="?tab=hcaptcha" class="nav-tab <?= $activeTab === 'hcaptcha' ? 'active' : '' ?>">
+                <span class="icon">🔐</span> hCaptcha
+            </a>
+            <a href="?tab=visits" class="nav-tab <?= $activeTab === 'visits' ? 'active' : '' ?>">
+                <span class="icon">👁️</span> Visites
+                <span class="badge badge-new" style="margin-left: 0.5rem;"><?= $totalVisits ?></span>
+            </a>
+        </nav>
+
+        <!-- Stats Cards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Visites</div>
+                <div class="stat-value"><?= $totalVisits ?></div>
+            </div>
+            <div class="stat-card allowed">
+                <div class="stat-label">Autorisées</div>
+                <div class="stat-value"><?= $allowedVisits ?></div>
+            </div>
+            <div class="stat-card blocked">
+                <div class="stat-label">Bloquées</div>
+                <div class="stat-value"><?= $blockedVisits ?></div>
+            </div>
+            <div class="stat-card bots">
+                <div class="stat-label">Bots Détectés</div>
+                <div class="stat-value"><?= $botVisits ?></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Datacenters</div>
+                <div class="stat-value"><?= $datacenterVisits ?></div>
             </div>
         </div>
-        
-        <form method="POST">
-            <div class="grid">
-                <!-- Actions de blocage -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">🛡️</span>
-                        <h2>Actions de Blocage</h2>
-                    </div>
-                    <div class="card-body">
+
+        <?php if ($activeTab === 'security'): ?>
+        <!-- TAB: Sécurité -->
+        <div class="config-grid">
+            <!-- Blocage -->
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🛡️</span>
+                    <h2>Actions de Blocage</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
                         <div class="toggle-group">
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">🏢</span>
-                                    Bloquer Datacenter
-                                </label>
+                                <label><span class="emoji">🏢</span> Bloquer Datacenter</label>
                                 <label class="switch">
-                                    <input type="checkbox" name="blockDatacenter" <?= ($config['blocking']['blockDatacenter'] ?? true) ? 'checked' : '' ?>>
+                                    <input type="checkbox" name="blockDatacenter" <?= ($config['blocking']['blockDatacenter'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">🏢</span>
-                                    Bloquer Datacenter (même pays autorisés)
-                                </label>
+                                <label><span class="emoji">🏢</span> Bloquer DC (même pays autorisés)</label>
                                 <label class="switch">
-                                    <input type="checkbox" name="blockDatacenterEvenIfCountryAllowed" <?= ($config['blocking']['blockDatacenterEvenIfCountryAllowed'] ?? true) ? 'checked' : '' ?>>
+                                    <input type="checkbox" name="blockDatacenterEvenIfCountryAllowed" <?= ($config['blocking']['blockDatacenterEvenIfCountryAllowed'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">🔄</span>
-                                    Bloquer Proxy
-                                </label>
+                                <label><span class="emoji">🔄</span> Bloquer Proxy</label>
                                 <label class="switch">
-                                    <input type="checkbox" name="blockProxy" <?= ($config['blocking']['blockProxy'] ?? true) ? 'checked' : '' ?>>
+                                    <input type="checkbox" name="blockProxy" <?= ($config['blocking']['blockProxy'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">🧅</span>
-                                    Bloquer Tor
-                                </label>
+                                <label><span class="emoji">🧅</span> Bloquer Tor</label>
                                 <label class="switch">
-                                    <input type="checkbox" name="blockTor" <?= ($config['blocking']['blockTor'] ?? true) ? 'checked' : '' ?>>
+                                    <input type="checkbox" name="blockTor" <?= ($config['blocking']['blockTor'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">🔐</span>
-                                    Bloquer VPN
-                                </label>
+                                <label><span class="emoji">🔐</span> Bloquer VPN</label>
                                 <label class="switch">
-                                    <input type="checkbox" name="blockVPN" <?= ($config['blocking']['blockVPN'] ?? true) ? 'checked' : '' ?>>
+                                    <input type="checkbox" name="blockVPN" <?= ($config['blocking']['blockVPN'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
                         </div>
-                    </div>
+                        <button type="submit" name="save_blocking" class="btn btn-primary" style="margin-top: 1.5rem; width: 100%;">
+                            💾 Sauvegarder
+                        </button>
+                    </form>
                 </div>
-                
-                <!-- Seuils de score -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">📊</span>
-                        <h2>Seuils de Score</h2>
-                    </div>
-                    <div class="card-body">
-                        <div class="form-group">
+            </div>
+
+            <!-- Seuils -->
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">📊</span>
+                    <h2>Seuils de Détection</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
                             <label>Score comportement minimum (0-100)</label>
                             <input type="number" name="minBehaviorScore" min="0" max="100" value="<?= $config['thresholds']['minBehaviorScore'] ?? 50 ?>">
                         </div>
-                        
-                        <div class="form-group">
+                        <div class="input-group">
                             <label>Score fingerprint minimum (0-100)</label>
                             <input type="number" name="minFingerprintScore" min="0" max="100" value="<?= $config['thresholds']['minFingerprintScore'] ?? 50 ?>">
                         </div>
-                        
-                        <div class="form-group">
+                        <div class="input-group">
                             <label>Score global minimum (0-100)</label>
                             <input type="number" name="minOverallScore" min="0" max="100" value="<?= $config['thresholds']['minOverallScore'] ?? 40 ?>">
                         </div>
-                    </div>
+                        <button type="submit" name="save_thresholds" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
+                            💾 Sauvegarder
+                        </button>
+                    </form>
                 </div>
-                
-                <!-- Rate Limiting -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">⏱️</span>
-                        <h2>Rate Limiting</h2>
-                    </div>
-                    <div class="card-body">
-                        <div class="form-group">
-                            <label>Requêtes max par minute</label>
+            </div>
+
+            <!-- Rate Limiting -->
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">⏱️</span>
+                    <h2>Rate Limiting</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>Requêtes par minute</label>
                             <input type="number" name="requestsPerMinute" min="1" max="1000" value="<?= $config['rateLimit']['requestsPerMinute'] ?? 30 ?>">
                         </div>
-                        
-                        <div class="form-group">
-                            <label>Requêtes max par heure</label>
+                        <div class="input-group">
+                            <label>Requêtes par heure</label>
                             <input type="number" name="requestsPerHour" min="1" max="10000" value="<?= $config['rateLimit']['requestsPerHour'] ?? 200 ?>">
                         </div>
-                        
-                        <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 10px;">
-                            ⚡ Blocage progressif : 1min → 5min → 15min → 1h
-                        </p>
-                    </div>
+                        <button type="submit" name="save_ratelimit" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
+                            💾 Sauvegarder
+                        </button>
+                    </form>
                 </div>
-                
-                <!-- Mode de fonctionnement -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">⚙️</span>
-                        <h2>Mode de Fonctionnement</h2>
-                    </div>
-                    <div class="card-body">
-                        <div class="mode-selector">
-                            <label class="mode-btn <?= ($config['mode'] ?? 'strict') === 'strict' ? 'active' : '' ?>">
-                                <input type="radio" name="mode" value="strict" <?= ($config['mode'] ?? 'strict') === 'strict' ? 'checked' : '' ?>>
-                                <span class="emoji">🔒</span>
-                                <span class="title">Strict</span>
-                                <span class="desc">Sécurité maximale</span>
-                            </label>
-                            
-                            <label class="mode-btn <?= ($config['mode'] ?? '') === 'moderate' ? 'active' : '' ?>">
-                                <input type="radio" name="mode" value="moderate" <?= ($config['mode'] ?? '') === 'moderate' ? 'checked' : '' ?>>
-                                <span class="emoji">⚖️</span>
-                                <span class="title">Modéré</span>
-                                <span class="desc">Équilibré</span>
-                            </label>
-                            
-                            <label class="mode-btn <?= ($config['mode'] ?? '') === 'permissive' ? 'active' : '' ?>">
-                                <input type="radio" name="mode" value="permissive" <?= ($config['mode'] ?? '') === 'permissive' ? 'checked' : '' ?>>
-                                <span class="emoji">🔓</span>
-                                <span class="title">Permissif</span>
-                                <span class="desc">Moins restrictif</span>
-                            </label>
+            </div>
+
+            <!-- Mode & Logging -->
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">⚙️</span>
+                    <h2>Mode & Logging</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>Mode de sécurité</label>
+                            <select name="mode">
+                                <option value="strict" <?= ($config['mode'] ?? 'strict') === 'strict' ? 'selected' : '' ?>>🔒 Strict</option>
+                                <option value="moderate" <?= ($config['mode'] ?? '') === 'moderate' ? 'selected' : '' ?>>⚖️ Modéré</option>
+                                <option value="permissive" <?= ($config['mode'] ?? '') === 'permissive' ? 'selected' : '' ?>>🔓 Permissif</option>
+                            </select>
                         </div>
-                        
-                        <div class="toggle-group" style="margin-top: 20px;">
+                        <button type="submit" name="save_mode" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
+                            💾 Sauvegarder Mode
+                        </button>
+                    </form>
+                    
+                    <form method="POST" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid rgba(0, 240, 255, 0.2);">
+                        <div class="toggle-group">
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">📝</span>
-                                    Logger les blocages
-                                </label>
+                                <label><span class="emoji">📝</span> Logger les blocages</label>
                                 <label class="switch">
                                     <input type="checkbox" name="logBlocked" <?= ($config['logging']['logBlocked'] ?? true) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">⚠️</span>
-                                    Logger les suspects
-                                </label>
+                                <label><span class="emoji">⚠️</span> Logger les suspects</label>
                                 <label class="switch">
                                     <input type="checkbox" name="logSuspicious" <?= ($config['logging']['logSuspicious'] ?? true) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
-                            <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">📱</span>
-                                    Alertes Telegram
-                                </label>
-                                <label class="switch">
-                                    <input type="checkbox" name="sendTelegramAlerts" <?= ($config['logging']['sendTelegramAlerts'] ?? false) ? 'checked' : '' ?>>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
                         </div>
+                        <button type="submit" name="save_logging" class="btn btn-secondary" style="margin-top: 1rem; width: 100%;">
+                            💾 Sauvegarder Logging
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($activeTab === 'whitelist'): ?>
+        <!-- TAB: Whitelist -->
+        <div class="config-grid">
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🌍</span>
+                    <h2>Pays Autorisés</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>Codes pays ISO (un par ligne)</label>
+                            <textarea name="whitelist_countries" placeholder="MA&#10;CM&#10;ZA&#10;FR"><?= implode("\n", $whitelist['countries']) ?></textarea>
+                        </div>
+                        <div class="input-group">
+                            <label>IPs autorisées (une par ligne)</label>
+                            <textarea name="whitelist_ips" placeholder="192.168.1.1&#10;10.0.0.1"><?= implode("\n", $whitelist['ips']) ?></textarea>
+                        </div>
+                        <button type="submit" name="save_whitelist" class="btn btn-primary" style="width: 100%;">
+                            💾 Sauvegarder Whitelist
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">📋</span>
+                    <h2>Codes Pays Courants</h2>
+                </div>
+                <div class="config-card-body">
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; font-size: 0.85rem;">
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇲🇦 MA - Maroc</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇨🇲 CM - Cameroun</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇿🇦 ZA - Afrique du Sud</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇫🇷 FR - France</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇧🇪 BE - Belgique</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇨🇭 CH - Suisse</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇨🇦 CA - Canada</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇸🇳 SN - Sénégal</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇨🇮 CI - Côte d'Ivoire</div>
+                        <div style="padding: 0.5rem; background: rgba(0,0,0,0.2); border-radius: 6px;">🇬🇦 GA - Gabon</div>
                     </div>
                 </div>
-                
-                <!-- hCaptcha Options -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="icon">🔐</span>
-                        <h2>hCaptcha - Options</h2>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($activeTab === 'blacklist'): ?>
+        <!-- TAB: Blacklist -->
+        <div class="config-grid">
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🚫</span>
+                    <h2>IPs Bloquées</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>IPs bloquées (une par ligne)</label>
+                            <textarea name="blacklist_ips" style="min-height: 300px;" placeholder="192.168.1.1&#10;10.0.0.1"><?= implode("\n", $blacklist) ?></textarea>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem;">
+                            ℹ️ Les IPs détectées comme bots ou datacenters sont automatiquement ajoutées.
+                        </p>
+                        <button type="submit" name="save_blacklist" class="btn btn-primary" style="width: 100%;">
+                            💾 Sauvegarder Blacklist
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">📊</span>
+                    <h2>Statistiques Blacklist</h2>
+                </div>
+                <div class="config-card-body">
+                    <div class="stat-card" style="margin-bottom: 1rem;">
+                        <div class="stat-label">IPs dans la blacklist</div>
+                        <div class="stat-value"><?= count($blacklist) ?></div>
                     </div>
-                    <div class="card-body">
+                    <p style="color: var(--text-secondary); font-size: 0.9rem;">
+                        Les IPs sont automatiquement ajoutées quand :
+                    </p>
+                    <ul style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.5rem; padding-left: 1.5rem;">
+                        <li>Un bot est détecté</li>
+                        <li>Une connexion datacenter est bloquée</li>
+                        <li>Le rate limit est dépassé plusieurs fois</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($activeTab === 'hcaptcha'): ?>
+        <!-- TAB: hCaptcha -->
+        <div class="config-grid">
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🔐</span>
+                    <h2>Configuration hCaptcha</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
                         <div class="toggle-group">
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">✅</span>
-                                    Activer hCaptcha
-                                </label>
+                                <label><span class="emoji">✅</span> Activer hCaptcha</label>
                                 <label class="switch">
                                     <input type="checkbox" name="hcaptchaEnabled" <?= ($config['hcaptcha']['enabled'] ?? false) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
                                 </label>
                             </div>
-                            
                             <div class="toggle-item">
-                                <label>
-                                    <span class="emoji">👻</span>
-                                    Mode Invisible
-                                </label>
+                                <label><span class="emoji">👻</span> Mode Invisible</label>
                                 <label class="switch">
                                     <input type="checkbox" name="hcaptchaInvisible" <?= ($config['hcaptcha']['invisible'] ?? true) ? 'checked' : '' ?>>
                                     <span class="slider"></span>
@@ -1117,565 +1463,225 @@ $countryCodes = [
                             </div>
                         </div>
                         
-                        <div class="form-group" style="margin-top: 20px;">
+                        <div class="input-group" style="margin-top: 1.5rem;">
                             <label>Thème</label>
                             <select name="hcaptchaTheme">
-                                <option value="dark" <?= ($config['hcaptcha']['theme'] ?? 'dark') === 'dark' ? 'selected' : '' ?>>🌙 Sombre</option>
-                                <option value="light" <?= ($config['hcaptcha']['theme'] ?? '') === 'light' ? 'selected' : '' ?>>☀️ Clair</option>
+                                <option value="dark" <?= ($config['hcaptcha']['theme'] ?? 'dark') === 'dark' ? 'selected' : '' ?>>🌙 Dark</option>
+                                <option value="light" <?= ($config['hcaptcha']['theme'] ?? '') === 'light' ? 'selected' : '' ?>>☀️ Light</option>
                             </select>
                         </div>
                         
-                        <div class="form-group">
+                        <div class="input-group">
                             <label>Taille</label>
                             <select name="hcaptchaSize">
                                 <option value="normal" <?= ($config['hcaptcha']['size'] ?? 'normal') === 'normal' ? 'selected' : '' ?>>Normal</option>
                                 <option value="compact" <?= ($config['hcaptcha']['size'] ?? '') === 'compact' ? 'selected' : '' ?>>Compact</option>
-                                <option value="invisible" <?= ($config['hcaptcha']['size'] ?? '') === 'invisible' ? 'selected' : '' ?>>Invisible</option>
                             </select>
                         </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div style="text-align: center; margin: 30px 0;">
-                <button type="submit" name="save_config" class="btn btn-primary" style="padding: 16px 60px; font-size: 1.1rem;">
-                    💾 Sauvegarder la Configuration
-                </button>
-            </div>
-        </form>
-        
-        <!-- Section hCaptcha Keys (formulaire séparé) -->
-        <div class="grid" style="margin-top: 30px;">
-            <div class="card" style="grid-column: span 2;">
-                <div class="card-header">
-                    <span class="icon">🔑</span>
-                    <h2>hCaptcha - Clés API</h2>
-                </div>
-                <div class="card-body">
-                    <?php 
-                    $envData = loadEnvFile($hcaptchaEnvFile);
-                    $currentSiteKey = $envData['HCAPTCHA_SITEKEY'] ?? '';
-                    $currentSecret = $envData['HCAPTCHA_SECRET'] ?? '';
-                    $hasKeys = !empty($currentSiteKey) && !empty($currentSecret);
-                    ?>
-                    
-                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 16px; background: <?= $hasKeys ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)' ?>; border-radius: 8px; border: 1px solid <?= $hasKeys ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)' ?>;">
-                        <span style="font-size: 1.5rem;"><?= $hasKeys ? '✅' : '❌' ?></span>
-                        <div>
-                            <strong style="color: <?= $hasKeys ? 'var(--success)' : 'var(--danger)' ?>;">
-                                <?= $hasKeys ? 'Clés configurées' : 'Clés non configurées' ?>
-                            </strong>
-                            <p style="color: var(--text-muted); font-size: 0.85rem; margin: 4px 0 0 0;">
-                                <?= $hasKeys ? 'hCaptcha est prêt à être utilisé' : 'Configurez vos clés pour activer hCaptcha' ?>
-                            </p>
-                        </div>
-                    </div>
-                    
-                    <form method="POST">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                            <div class="form-group">
-                                <label>🔓 Site Key (publique)</label>
-                                <input type="text" name="hcaptcha_sitekey" 
-                                       value="<?= htmlspecialchars($currentSiteKey) ?>" 
-                                       placeholder="10000000-ffff-ffff-ffff-000000000001"
-                                       style="font-family: monospace;">
-                                <small style="color: var(--text-muted); display: block; margin-top: 6px;">
-                                    Visible dans le code source du site
-                                </small>
-                            </div>
-                            
-                            <div class="form-group">
-                                <label>🔐 Secret Key (privée)</label>
-                                <input type="password" name="hcaptcha_secret" 
-                                       value="<?= htmlspecialchars($currentSecret) ?>" 
-                                       placeholder="0x0000000000000000000000000000000000000000"
-                                       style="font-family: monospace;">
-                                <small style="color: var(--text-muted); display: block; margin-top: 6px;">
-                                    ⚠️ Ne jamais partager cette clé
-                                </small>
-                            </div>
-                        </div>
                         
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border);">
-                            <a href="https://dashboard.hcaptcha.com/" target="_blank" style="color: var(--accent); text-decoration: none; display: flex; align-items: center; gap: 8px;">
-                                <span>📋</span> Obtenir vos clés sur hCaptcha Dashboard
-                            </a>
-                            <button type="submit" name="save_hcaptcha_keys" class="btn btn-success">
-                                🔑 Sauvegarder les Clés
-                            </button>
-                        </div>
+                        <button type="submit" name="save_hcaptcha" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
+                            💾 Sauvegarder Config
+                        </button>
                     </form>
-                    
-                    <div style="margin-top: 20px; padding: 16px; background: var(--bg-dark); border-radius: 8px;">
-                        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 10px;">
-                            <strong>📝 Note :</strong> Après avoir modifié les clés, vous devez redémarrer le serveur WebSocket pour appliquer les changements.
-                        </p>
-                        <p style="color: var(--text-muted); font-size: 0.85rem;">
-                            Sur Render, les clés peuvent aussi être configurées dans <strong>Environment Variables</strong> du Dashboard.
-                        </p>
-                    </div>
                 </div>
             </div>
-        </div>
-        
-        <div class="grid">
-            <!-- Whitelist Pays -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="icon">🌍</span>
-                    <h2>Pays Autorisés (Whitelist)</h2>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
-                        <div class="input-group">
-                            <select name="new_country">
-                                <option value="">-- Sélectionner un pays --</option>
-                                <?php foreach ($countryCodes as $code => $name): ?>
-                                    <option value="<?= $code ?>"><?= $name ?> (<?= $code ?>)</option>
-                                <?php endforeach; ?>
-                            </select>
-                            <button type="submit" name="add_country" class="btn btn-success">+ Ajouter</button>
-                        </div>
-                    </form>
-                    
-                    <div class="tags">
-                        <?php 
-                        $whitelistCountries = loadTextFile($whitelistFile);
-                        foreach ($whitelistCountries as $code): 
-                            $name = $countryCodes[$code] ?? $code;
-                        ?>
-                            <span class="tag">
-                                <span class="flag"><?= $code ?></span>
-                                <?= $name ?>
-                                <a href="?remove_country=<?= $code ?>" class="remove" onclick="return confirm('Supprimer ce pays ?')">×</a>
-                            </span>
-                        <?php endforeach; ?>
-                        
-                        <?php if (empty($whitelistCountries)): ?>
-                            <p style="color: var(--text-muted); font-style: italic;">
-                                Aucun pays configuré = Tous les pays sont autorisés
-                            </p>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Blacklist IPs -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="icon">🚫</span>
-                    <h2>IPs Bloquées (Blacklist)</h2>
-                </div>
-                <div class="card-body">
-                    <form method="POST">
-                        <div class="input-group">
-                            <input type="text" name="new_ip" placeholder="Ex: 192.168.1.1">
-                            <button type="submit" name="add_ip" class="btn btn-danger">+ Bloquer</button>
-                        </div>
-                    </form>
-                    
-                    <div class="tags">
-                        <?php 
-                        $blockedIPs = loadTextFile($botfuckFile);
-                        foreach ($blockedIPs as $ip): 
-                        ?>
-                            <span class="tag">
-                                🔴 <?= htmlspecialchars($ip) ?>
-                                <a href="?remove_ip=<?= urlencode($ip) ?>" class="remove" onclick="return confirm('Débloquer cette IP ?')">×</a>
-                            </span>
-                        <?php endforeach; ?>
-                        
-                        <?php if (empty($blockedIPs)): ?>
-                            <p style="color: var(--text-muted); font-style: italic;">
-                                Aucune IP bloquée
-                            </p>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        </div><!-- Fin TAB Configuration -->
-        <?php endif; ?>
-        
-        <?php if ($activeTab === 'visits'): ?>
-        <!-- TAB: Visites en Temps Réel -->
-        <div class="tab-content active">
-            <div class="card">
-                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <span class="icon">👁️</span>
-                        <h2>Visites en Temps Réel</h2>
-                    </div>
-                    <div style="display: flex; gap: 10px;">
-                        <a href="?tab=visits&refresh=1" class="btn btn-primary btn-sm">🔄 Actualiser</a>
-                        <a href="?tab=visits&clear_visits=1" class="btn btn-danger btn-sm" onclick="return confirm('Effacer toutes les visites ?')">🗑️ Effacer</a>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <?php
-                    // URL de l'API du serveur WebSocket sur Render
-                    $apiUrl = 'https://neti-websocket-server.onrender.com/api/visits';
-                    $visits = [];
-                    $apiError = null;
-                    
-                    // Effacer les visites si demandé
-                    if (isset($_GET['clear_visits'])) {
-                        $clearUrl = 'https://neti-websocket-server.onrender.com/api/visits/clear';
-                        $opts = [
-                            'http' => [
-                                'method' => 'POST',
-                                'header' => 'Content-Type: application/json',
-                                'timeout' => 10
-                            ]
-                        ];
-                        $context = stream_context_create($opts);
-                        @file_get_contents($clearUrl, false, $context);
-                        header('Location: ozyadmin.php');
-                        exit;
-                    }
-                    
-                    // Charger les visites depuis l'API Render
-                    try {
-                        $opts = [
-                            'http' => [
-                                'method' => 'GET',
-                                'header' => 'Accept: application/json',
-                                'timeout' => 10
-                            ]
-                        ];
-                        $context = stream_context_create($opts);
-                        $response = @file_get_contents($apiUrl, false, $context);
-                        
-                        if ($response !== false) {
-                            $data = json_decode($response, true);
-                            if (isset($data['visits'])) {
-                                $visits = $data['visits'];
-                            }
-                        } else {
-                            $apiError = "Impossible de contacter le serveur WebSocket";
-                        }
-                    } catch (Exception $e) {
-                        $apiError = $e->getMessage();
-                    }
-                    
-                    // Fallback: charger depuis le fichier local si l'API échoue
-                    if (empty($visits) && $apiError) {
-                        $visitsFile = __DIR__ . '/visits.json';
-                        if (file_exists($visitsFile)) {
-                            $visits = json_decode(file_get_contents($visitsFile), true) ?? [];
-                        }
-                    }
-                    
-                    // Statistiques
-                    $totalVisits = count($visits);
-                    $allowedVisits = count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'allowed'));
-                    $blockedVisits = count(array_filter($visits, fn($v) => ($v['status'] ?? '') === 'blocked'));
-                    ?>
-                    
-                    <?php if ($apiError): ?>
-                    <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--danger); padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px;">
-                        <span>⚠️</span>
-                        <div>
-                            <strong style="color: var(--danger);">Erreur API:</strong>
-                            <span style="color: var(--text-muted);"><?= htmlspecialchars($apiError) ?></span>
-                            <br><small style="color: var(--text-muted);">Les données affichées proviennent du cache local.</small>
-                        </div>
-                    </div>
-                    <?php endif; ?>
-                    
-                    <!-- Stats des visites -->
-                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;">
-                        <div style="background: var(--bg-dark); padding: 16px; border-radius: 8px; text-align: center;">
-                            <div style="font-size: 1.8rem; font-weight: 700; color: var(--accent);"><?= $totalVisits ?></div>
-                            <div style="color: var(--text-muted); font-size: 0.85rem;">Total</div>
-                        </div>
-                        <div style="background: var(--bg-dark); padding: 16px; border-radius: 8px; text-align: center;">
-                            <div style="font-size: 1.8rem; font-weight: 700; color: var(--success);"><?= $allowedVisits ?></div>
-                            <div style="color: var(--text-muted); font-size: 0.85rem;">Autorisées</div>
-                        </div>
-                        <div style="background: var(--bg-dark); padding: 16px; border-radius: 8px; text-align: center;">
-                            <div style="font-size: 1.8rem; font-weight: 700; color: var(--danger);"><?= $blockedVisits ?></div>
-                            <div style="color: var(--text-muted); font-size: 0.85rem;">Bloquées</div>
-                        </div>
-                        <div style="background: var(--bg-dark); padding: 16px; border-radius: 8px; text-align: center;">
-                            <div style="font-size: 1.8rem; font-weight: 700; color: var(--warning);">
-                                <?= $totalVisits > 0 ? round(($blockedVisits / $totalVisits) * 100) : 0 ?>%
-                            </div>
-                            <div style="color: var(--text-muted); font-size: 0.85rem;">Taux blocage</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Légende des couleurs IP -->
-                    <div style="display: flex; gap: 20px; margin-bottom: 16px; padding: 12px 16px; background: var(--bg-dark); border-radius: 8px; align-items: center;">
-                        <span style="color: var(--text-muted); font-size: 0.85rem; font-weight: 500;">Légende IP :</span>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <code style="background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem;">IP</code>
-                            <span style="color: var(--text-muted); font-size: 0.8rem;">= 🤖 Bot détecté</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <code style="background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem;">IP</code>
-                            <span style="color: var(--text-muted); font-size: 0.8rem;">= 🌍 Pays non autorisé</span>
-                        </div>
-                        <div style="display: flex; align-items: center; gap: 6px;">
-                            <code style="background: var(--bg-card); color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; border: 1px solid var(--border);">IP</code>
-                            <span style="color: var(--text-muted); font-size: 0.8rem;">= Normal</span>
-                        </div>
-                        <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
-                            <span id="refresh-indicator" style="width: 8px; height: 8px; background: #22c55e; border-radius: 50%; animation: pulse 2s infinite;"></span>
-                            <span style="color: var(--text-muted); font-size: 0.8rem;">Auto-refresh: <span id="countdown">10</span>s</span>
-                        </div>
-                    </div>
-                    
-                    <!-- Tableau des visites -->
-                    <div style="overflow-x: auto;">
-                        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                            <thead>
-                                <tr style="border-bottom: 2px solid var(--border);">
-                                    <th style="padding: 12px 8px; text-align: left; color: var(--text-muted);">Date/Heure</th>
-                                    <th style="padding: 12px 8px; text-align: left; color: var(--text-muted);">IP</th>
-                                    <th style="padding: 12px 8px; text-align: left; color: var(--text-muted);">Pays</th>
-                                    <th style="padding: 12px 8px; text-align: left; color: var(--text-muted);">User-Agent</th>
-                                    <th style="padding: 12px 8px; text-align: center; color: var(--text-muted);">Détections</th>
-                                    <th style="padding: 12px 8px; text-align: center; color: var(--text-muted);">Statut</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php if (empty($visits)): ?>
-                                    <tr>
-                                        <td colspan="6" style="padding: 40px; text-align: center; color: var(--text-muted);">
-                                            <div style="font-size: 2rem; margin-bottom: 10px;">📭</div>
-                                            Aucune visite enregistrée
-                                        </td>
-                                    </tr>
-                                <?php else: ?>
-                                    <?php foreach (array_slice($visits, 0, 500) as $visit): ?>
-                                        <?php
-                                        $isBlocked = $visit['status'] === 'blocked';
-                                        $rowBg = $isBlocked ? 'rgba(239, 68, 68, 0.05)' : 'transparent';
-                                        $detection = $visit['detection'] ?? [];
-                                        
-                                        // Formater la date
-                                        $date = new DateTime($visit['timestamp']);
-                                        $dateStr = $date->format('d/m H:i:s');
-                                        
-                                        // Tronquer le User-Agent
-                                        $ua = $visit['userAgent'] ?? 'Unknown';
-                                        $uaShort = strlen($ua) > 50 ? substr($ua, 0, 50) . '...' : $ua;
-                                        
-                                        // Badges de détection
-                                        $badges = [];
-                                        if ($detection['isBot'] ?? false) $badges[] = '<span style="background: #ef4444; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;">🤖 Bot</span>';
-                                        if ($detection['isDatacenter'] ?? false) $badges[] = '<span style="background: #f59e0b; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;">🏢 DC</span>';
-                                        if ($detection['isProxy'] ?? false) $badges[] = '<span style="background: #8b5cf6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;">🔄 Proxy</span>';
-                                        if ($detection['isVPN'] ?? false) $badges[] = '<span style="background: #3b82f6; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;">🔐 VPN</span>';
-                                        if ($detection['isTor'] ?? false) $badges[] = '<span style="background: #6366f1; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem;">🧅 Tor</span>';
-                                        
-                                        // Raison du blocage
-                                        $blockReasons = [
-                                            'blacklisted_ip' => 'IP Blacklist',
-                                            'bot_detected' => 'Bot',
-                                            'rate_limited' => 'Rate Limit',
-                                            'country_blocked' => 'Pays',
-                                            'datacenter_blocked' => 'Datacenter',
-                                            'tor_blocked' => 'Tor',
-                                            'vpn_blocked' => 'VPN',
-                                            'proxy_blocked' => 'Proxy'
-                                        ];
-                                        $blockReason = $blockReasons[$detection['blockReason'] ?? ''] ?? '';
-                                        
-                                        // Déterminer la couleur et la classe CSS de l'IP
-                                        $ipClass = '';
-                                        $ipTitle = '';
-                                        
-                                        // Rouge pour les bots détectés (priorité)
-                                        if (($detection['isBot'] ?? false) || ($detection['blockReason'] ?? '') === 'bot_detected') {
-                                            $ipClass = 'ip-bot';
-                                            $ipTitle = '🤖 Bot détecté';
-                                        }
-                                        // Bleu pour les pays non autorisés
-                                        elseif (($detection['blockReason'] ?? '') === 'country_blocked') {
-                                            $ipClass = 'ip-country';
-                                            $ipTitle = '🌍 Pays non autorisé';
-                                        }
-                                        
-                                        // Vérifier si c'est une nouvelle visite (< 30 secondes)
-                                        $visitTime = strtotime($visit['timestamp']);
-                                        $isNewVisit = (time() - $visitTime) < 30;
-                                        $rowClass = 'visit-row' . ($isNewVisit ? ' new-visit' : '');
-                                        ?>
-                                        <tr class="<?= $rowClass ?>" data-timestamp="<?= $visit['timestamp'] ?>" style="background: <?= $rowBg ?>; border-bottom: 1px solid var(--border);">
-                                            <td style="padding: 10px 8px; white-space: nowrap;">
-                                                <span style="color: var(--text-muted);"><?= $dateStr ?></span>
-                                                <?php if ($isNewVisit): ?>
-                                                    <span style="background: #22c55e; color: white; padding: 1px 4px; border-radius: 3px; font-size: 0.65rem; margin-left: 4px;">NEW</span>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td style="padding: 10px 8px;">
-                                                <code class="<?= $ipClass ?>" style="padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; <?= empty($ipClass) ? 'background: var(--bg-dark); color: white;' : '' ?>" title="<?= $ipTitle ?>">
-                                                    <?= htmlspecialchars($visit['ip'] ?? 'N/A') ?>
-                                                </code>
-                                            </td>
-                                            <td style="padding: 10px 8px;">
-                                                <span title="<?= htmlspecialchars($visit['country'] ?? '') ?>">
-                                                    <?= htmlspecialchars($visit['countryCode'] ?? 'XX') ?>
-                                                </span>
-                                                <span style="color: var(--text-muted); font-size: 0.8rem; margin-left: 4px;">
-                                                    <?= htmlspecialchars($visit['country'] ?? '') ?>
-                                                </span>
-                                            </td>
-                                            <td style="padding: 10px 8px; max-width: 250px;">
-                                                <span title="<?= htmlspecialchars($ua) ?>" style="color: var(--text-muted); font-size: 0.8rem;">
-                                                    <?= htmlspecialchars($uaShort) ?>
-                                                </span>
-                                            </td>
-                                            <td style="padding: 10px 8px; text-align: center;">
-                                                <?php if (empty($badges)): ?>
-                                                    <span style="color: var(--text-muted);">-</span>
-                                                <?php else: ?>
-                                                    <div style="display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;">
-                                                        <?= implode('', $badges) ?>
-                                                    </div>
-                                                <?php endif; ?>
-                                            </td>
-                                            <td style="padding: 10px 8px; text-align: center;">
-                                                <?php if ($isBlocked): ?>
-                                                    <span style="background: var(--danger); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">
-                                                        🚫 <?= $blockReason ?>
-                                                    </span>
-                                                <?php else: ?>
-                                                    <span style="background: var(--success); color: white; padding: 4px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">
-                                                        ✅ OK
-                                                    </span>
-                                                <?php endif; ?>
-                                            </td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                    
-                    <?php if (count($visits) > 500): ?>
-                        <div style="text-align: center; margin-top: 16px; color: var(--text-muted); font-size: 0.85rem;">
-                            Affichage des 500 dernières visites sur <?= count($visits) ?> total
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div><!-- Fin TAB Visites -->
-        <?php endif; ?>
-        
-        <div style="text-align: center; margin-top: 40px; color: var(--text-muted); font-size: 0.9rem;">
-            <p>🛡️ OZY Admin Panel v1.0 - Sécurité Anti-Bot</p>
-        </div>
-    </div>
-    
-    <style>
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        .visit-row {
-            transition: background-color 0.3s ease;
-        }
-        
-        .visit-row.new-visit {
-            animation: highlightNew 2s ease-out;
-        }
-        
-        @keyframes highlightNew {
-            0% { background-color: rgba(34, 197, 94, 0.3); }
-            100% { background-color: transparent; }
-        }
-        
-        .ip-bot {
-            background: #ef4444 !important;
-            color: white !important;
-            animation: pulseRed 1.5s infinite;
-        }
-        
-        .ip-country {
-            background: #3b82f6 !important;
-            color: white !important;
-            animation: pulseBlue 1.5s infinite;
-        }
-        
-        @keyframes pulseRed {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
-            50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-        }
-        
-        @keyframes pulseBlue {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
-            50% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
-        }
-    </style>
-    
-    <script>
-        // Activer visuellement le mode sélectionné
-        document.querySelectorAll('.mode-btn input').forEach(input => {
-            input.addEventListener('change', function() {
-                document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
-                this.parentElement.classList.add('active');
-            });
-        });
-        
-        // Auto-refresh en temps réel (toutes les 10 secondes)
-        let countdown = 10;
-        let autoRefreshEnabled = true;
-        const countdownEl = document.getElementById('countdown');
-        const indicatorEl = document.getElementById('refresh-indicator');
-        
-        function updateCountdown() {
-            if (!autoRefreshEnabled) return;
-            
-            countdown--;
-            if (countdownEl) countdownEl.textContent = countdown;
-            
-            if (countdown <= 0) {
-                // Ne pas rafraîchir si l'utilisateur est en train de modifier un formulaire
-                const activeEl = document.activeElement;
-                if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'SELECT' || activeEl.tagName === 'TEXTAREA')) {
-                    countdown = 10; // Réinitialiser le compteur
-                    return;
-                }
-                
-                // Rafraîchir la page
-                window.location.reload();
-            }
-        }
-        
-        // Démarrer le compteur
-        setInterval(updateCountdown, 1000);
-        
-        // Pause auto-refresh quand on interagit avec un formulaire
-        document.querySelectorAll('input, select, textarea').forEach(el => {
-            el.addEventListener('focus', () => {
-                autoRefreshEnabled = false;
-                if (indicatorEl) indicatorEl.style.background = '#f59e0b';
-                if (countdownEl) countdownEl.textContent = '⏸';
-            });
-            el.addEventListener('blur', () => {
-                autoRefreshEnabled = true;
-                countdown = 10;
-                if (indicatorEl) indicatorEl.style.background = '#22c55e';
-            });
-        });
-        
-        // Marquer les nouvelles visites (visites des 30 dernières secondes)
-        document.querySelectorAll('tr[data-timestamp]').forEach(row => {
-            const timestamp = new Date(row.dataset.timestamp);
-            const now = new Date();
-            const diff = (now - timestamp) / 1000;
-            
-            if (diff < 30) {
-                row.classList.add('new-visit');
-            }
-        });
-    </script>
-<?php endif; ?>
 
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🔑</span>
+                    <h2>Clés API hCaptcha</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>Site Key (publique)</label>
+                            <input type="text" name="hcaptchaSitekey" value="<?= htmlspecialchars(getEnvVar('HCAPTCHA_SITEKEY')) ?>" placeholder="Votre Site Key hCaptcha">
+                        </div>
+                        <div class="input-group">
+                            <label>Secret Key (privée)</label>
+                            <input type="password" name="hcaptchaSecret" value="<?= htmlspecialchars(getEnvVar('HCAPTCHA_SECRET')) ?>" placeholder="Votre Secret Key hCaptcha">
+                        </div>
+                        <button type="submit" name="save_hcaptcha_keys" class="btn btn-secondary" style="width: 100%;">
+                            🔑 Sauvegarder les clés
+                        </button>
+                    </form>
+                    
+                    <div style="margin-top: 1.5rem; padding: 1rem; background: rgba(0,0,0,0.3); border-radius: 10px; border: 1px solid rgba(0, 240, 255, 0.2);">
+                        <p style="color: var(--text-muted); font-size: 0.85rem;">
+                            ⚠️ Les clés sont sauvegardées dans <code style="color: var(--neon-cyan);">.env</code>
+                        </p>
+                        <a href="https://dashboard.hcaptcha.com/" target="_blank" style="display: inline-block; margin-top: 0.75rem; color: var(--neon-cyan); text-decoration: none; font-size: 0.9rem;">
+                            📋 Obtenir vos clés sur hCaptcha Dashboard →
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <?php if ($activeTab === 'visits'): ?>
+        <!-- TAB: Visites -->
+        <div class="visits-section">
+            <div class="visits-header">
+                <h2>👁️ Visites en Temps Réel</h2>
+                <div class="visits-actions">
+                    <div class="auto-refresh">
+                        <input type="checkbox" id="autoRefresh" checked>
+                        <label for="autoRefresh">Auto-refresh (30s)</label>
+                    </div>
+                    <a href="?tab=visits" class="btn btn-secondary">🔄 Actualiser</a>
+                    <form method="POST" style="display: inline;">
+                        <button type="submit" name="clear_visits" class="btn btn-danger" onclick="return confirm('Effacer tout l\'historique ?');">
+                            🗑️ Effacer
+                        </button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="table-container">
+                <?php if (empty($visits)): ?>
+                <div class="empty-state">
+                    <div class="icon">👁️</div>
+                    <p>Aucune visite enregistrée</p>
+                </div>
+                <?php else: ?>
+                <table class="visits-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>IP</th>
+                            <th>Pays</th>
+                            <th>User Agent</th>
+                            <th>Détection</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php 
+                        $now = new DateTime();
+                        foreach (array_slice($visits, 0, 500) as $index => $visit): 
+                            $isBlocked = ($visit['status'] ?? '') === 'blocked';
+                            $detection = $visit['detection'] ?? [];
+                            $isBot = $detection['isBot'] ?? false;
+                            $isDatacenter = $detection['isDatacenter'] ?? false;
+                            $isCountryBlocked = ($detection['blockReason'] ?? '') === 'country_blocked';
+                            
+                            // Date formatting
+                            $visitDate = new DateTime($visit['timestamp'] ?? 'now');
+                            $diff = $now->getTimestamp() - $visitDate->getTimestamp();
+                            $isNew = $diff < 60; // Less than 1 minute
+                            $dateStr = $visitDate->format('d/m H:i:s');
+                            
+                            // IP class
+                            $ipClass = 'allowed';
+                            if ($isBot || $isDatacenter) $ipClass = 'bot';
+                            elseif ($isCountryBlocked) $ipClass = 'country-blocked';
+                            
+                            // User Agent
+                            $ua = $visit['userAgent'] ?? 'Unknown';
+                            $uaShort = strlen($ua) > 50 ? substr($ua, 0, 50) . '...' : $ua;
+                            
+                            // Country flag
+                            $countryCode = strtoupper($visit['countryCode'] ?? 'XX');
+                            $flagEmoji = $countryCode !== 'XX' ? 
+                                implode('', array_map(fn($c) => mb_chr(ord($c) - ord('A') + 0x1F1E6), str_split($countryCode))) : '🌍';
+                        ?>
+                        <tr class="<?= $isBlocked ? 'blocked' : '' ?>">
+                            <td>
+                                <?= $dateStr ?>
+                                <?php if ($isNew): ?>
+                                <span class="badge badge-new">NEW</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="ip-cell <?= $ipClass ?>"><?= htmlspecialchars($visit['ip'] ?? 'N/A') ?></td>
+                            <td class="country-cell">
+                                <span class="country-flag"><?= $flagEmoji ?></span>
+                                <?= htmlspecialchars($visit['country'] ?? 'Unknown') ?>
+                            </td>
+                            <td class="ua-cell" title="<?= htmlspecialchars($ua) ?>"><?= htmlspecialchars($uaShort) ?></td>
+                            <td>
+                                <div class="detection-badges">
+                                    <?php if ($isBot): ?>
+                                    <span class="badge badge-bot">🤖 Bot</span>
+                                    <?php endif; ?>
+                                    <?php if ($isDatacenter): ?>
+                                    <span class="badge badge-datacenter">🏢 DC</span>
+                                    <?php endif; ?>
+                                    <?php if ($detection['isProxy'] ?? false): ?>
+                                    <span class="badge badge-proxy">🔄 Proxy</span>
+                                    <?php endif; ?>
+                                    <?php if ($detection['isTor'] ?? false): ?>
+                                    <span class="badge badge-proxy">🧅 Tor</span>
+                                    <?php endif; ?>
+                                    <?php if ($detection['isVPN'] ?? false): ?>
+                                    <span class="badge badge-proxy">🔐 VPN</span>
+                                    <?php endif; ?>
+                                    <?php if (empty(array_filter([$isBot, $isDatacenter, $detection['isProxy'] ?? false, $detection['isTor'] ?? false, $detection['isVPN'] ?? false]))): ?>
+                                    <span style="color: var(--text-muted);">—</span>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                            <td>
+                                <?php if ($isBlocked): ?>
+                                <span class="badge badge-blocked">🚫 Bloqué</span>
+                                <?php else: ?>
+                                <span class="badge badge-allowed">✅ OK</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+                <?php endif; ?>
+            </div>
+            
+            <?php if (count($visits) > 500): ?>
+            <div style="text-align: center; padding: 1rem; color: var(--text-muted); font-size: 0.85rem;">
+                Affichage des 500 dernières visites sur <?= count($visits) ?> total
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- Footer -->
+        <footer class="admin-footer">
+            <p>oZy Admin Panel v2.0 • Design Futuriste • 
+                <a href="https://github.com/lefabmartin/netistable" target="_blank">GitHub</a>
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        // Auto-refresh pour les visites
+        const autoRefreshCheckbox = document.getElementById('autoRefresh');
+        let refreshInterval;
+
+        function startAutoRefresh() {
+            if (window.location.search.includes('tab=visits')) {
+                refreshInterval = setInterval(() => {
+                    if (autoRefreshCheckbox && autoRefreshCheckbox.checked) {
+                        window.location.reload();
+                    }
+                }, 30000);
+            }
+        }
+
+        if (autoRefreshCheckbox) {
+            autoRefreshCheckbox.addEventListener('change', function() {
+                if (this.checked) {
+                    startAutoRefresh();
+                } else {
+                    clearInterval(refreshInterval);
+                }
+            });
+            startAutoRefresh();
+        }
+
+        // Masquer le toast après 3 secondes
+        setTimeout(() => {
+            const toast = document.querySelector('.toast');
+            if (toast) toast.style.display = 'none';
+        }, 3500);
+    </script>
 </body>
 </html>
