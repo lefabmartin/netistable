@@ -8,6 +8,7 @@
 $configFile = __DIR__ . '/security-config.json';
 $whitelistFile = __DIR__ . '/whitelist.txt';
 $blacklistFile = __DIR__ . '/blacklist.txt';
+$datacenterRangesFile = __DIR__ . '/datacenter-ranges.txt';
 $envFile = __DIR__ . '/server/.env';
 
 // API URL pour les visites (Render)
@@ -129,6 +130,96 @@ function saveBlacklist($ips) {
     file_put_contents($blacklistFile, $content);
 }
 
+function loadDatacenterRanges() {
+    global $datacenterRangesFile;
+    if (!file_exists($datacenterRangesFile)) {
+        $defaultRanges = [
+            '# Liste personnalisée IP/ranges Datacenter (IP ou CIDR, une entrée par ligne)',
+            '# Exemples:',
+            '# 4.222.252.105',
+            '# 20.33.0.0/16',
+            '# 40.64.0.0/10',
+            '',
+            '4.222.252.105'
+        ];
+        file_put_contents($datacenterRangesFile, implode("\n", $defaultRanges) . "\n");
+    }
+
+    $content = file_get_contents($datacenterRangesFile);
+    $lines = explode("\n", $content);
+    $ranges = [];
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '' || strpos($line, '#') === 0) {
+            continue;
+        }
+        $ranges[] = $line;
+    }
+
+    return array_values(array_unique($ranges));
+}
+
+function saveDatacenterRanges($ranges) {
+    global $datacenterRangesFile;
+    $content = "# Liste personnalisée IP/ranges Datacenter (IP ou CIDR, une entrée par ligne)\n";
+    $content .= "# Exemple IP: 4.222.252.105\n";
+    $content .= "# Exemple CIDR: 20.33.0.0/16\n\n";
+    foreach ($ranges as $range) {
+        $range = trim($range);
+        if ($range !== '') {
+            $content .= $range . "\n";
+        }
+    }
+    file_put_contents($datacenterRangesFile, $content);
+}
+
+function ipInCidr($ip, $cidr) {
+    if (strpos($cidr, '/') === false) {
+        return $ip === $cidr;
+    }
+
+    list($subnet, $prefixLength) = explode('/', $cidr, 2);
+    $prefixLength = intval($prefixLength);
+    $ipBin = @inet_pton($ip);
+    $subnetBin = @inet_pton($subnet);
+    if ($ipBin === false || $subnetBin === false || strlen($ipBin) !== strlen($subnetBin)) {
+        return false;
+    }
+
+    $totalBits = strlen($ipBin) * 8;
+    if ($prefixLength < 0 || $prefixLength > $totalBits) {
+        return false;
+    }
+
+    $fullBytes = intdiv($prefixLength, 8);
+    $remainingBits = $prefixLength % 8;
+
+    if ($fullBytes > 0 && substr($ipBin, 0, $fullBytes) !== substr($subnetBin, 0, $fullBytes)) {
+        return false;
+    }
+
+    if ($remainingBits === 0) {
+        return true;
+    }
+
+    $mask = (0xFF << (8 - $remainingBits)) & 0xFF;
+    return ((ord($ipBin[$fullBytes]) & $mask) === (ord($subnetBin[$fullBytes]) & $mask));
+}
+
+function isIpInDatacenterRanges($ip, $ranges) {
+    foreach ($ranges as $range) {
+        $range = trim($range);
+        if ($range === '') {
+            continue;
+        }
+        if (ipInCidr($ip, $range)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function getEnvVar($key) {
     global $envFile;
     if (!file_exists($envFile)) return '';
@@ -221,10 +312,11 @@ function removeIPFromWhitelist($ip) {
 // Ajouter une IP à la blacklist (local + Render)
 function addIPToBlacklist($ip, $reason = 'manual') {
     $blacklist = loadBlacklist();
-    if (!in_array($ip, $blacklist)) {
-        $blacklist[] = $ip;
-        saveBlacklist($blacklist);
+    if (in_array($ip, $blacklist, true)) {
+        return ['success' => true, 'message' => 'IP déjà blacklistée'];
     }
+    $blacklist[] = $ip;
+    saveBlacklist($blacklist);
     // Synchroniser avec Render
     return syncWithRender('/api/blacklist/add', ['ip' => $ip, 'reason' => $reason]);
 }
@@ -267,6 +359,40 @@ function removeCountryFromWhitelist($countryCode) {
 // Synchroniser la configuration de sécurité avec Render
 function syncConfigWithRender($config) {
     return syncWithRender('/api/config/update', $config);
+}
+
+// Renforcer le blocage: si une visite datacenter passe en "allowed", blacklister l'IP automatiquement.
+function enforceDatacenterBlockingFromVisits($visits, $config, $whitelist, $blacklist, $datacenterRanges) {
+    $isDatacenterBlockingEnabled = (bool)($config['blocking']['blockDatacenter'] ?? true);
+    if (!$isDatacenterBlockingEnabled || empty($visits)) {
+        return;
+    }
+
+    $whitelistIps = array_map('trim', $whitelist['ips'] ?? []);
+    $blacklistIps = array_map('trim', $blacklist ?? []);
+
+    foreach ($visits as $visit) {
+        $ip = trim($visit['ip'] ?? '');
+        if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) {
+            continue;
+        }
+        if (in_array($ip, $whitelistIps, true) || in_array($ip, $blacklistIps, true)) {
+            continue;
+        }
+
+        $detection = $visit['detection'] ?? [];
+        $status = strtolower((string)($visit['status'] ?? ''));
+        $isDatacenter = (bool)($detection['isDatacenter'] ?? false);
+        $blockReason = strtolower((string)($detection['blockReason'] ?? ''));
+        $looksLikeDatacenterReason = strpos($blockReason, 'datacenter') !== false;
+        $isForcedDatacenterIp = isIpInDatacenterRanges($ip, $datacenterRanges);
+
+        // Si classé datacenter (ou IP forcée) mais encore autorisé, on force le blocage.
+        if (($isDatacenter || $looksLikeDatacenterReason || $isForcedDatacenterIp) && $status !== 'blocked') {
+            addIPToBlacklist($ip, $isForcedDatacenterIp ? 'forced_datacenter_microsoft' : 'auto_datacenter_reinforced');
+            $blacklistIps[] = $ip;
+        }
+    }
 }
 
 // Traitement des formulaires
@@ -390,6 +516,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = 'Blacklist sauvegardée localement. Pour synchroniser avec Render, utilisez les boutons + et - individuels.';
         $messageType = 'success';
     }
+
+    if (isset($_POST['save_datacenter_ranges'])) {
+        $ranges = array_filter(array_map('trim', explode("\n", $_POST['datacenter_ranges'] ?? '')));
+        saveDatacenterRanges($ranges);
+        $message = 'Liste IP/ranges datacenter sauvegardée ✅';
+        $messageType = 'success';
+    }
     
     if (isset($_POST['save_hcaptcha'])) {
         $config['hcaptcha']['enabled'] = isset($_POST['hcaptchaEnabled']);
@@ -427,8 +560,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $config = loadConfig();
 $whitelist = loadWhitelist();
 $blacklist = loadBlacklist();
+$datacenterRanges = loadDatacenterRanges();
 $visitsData = fetchVisits();
 $visits = $visitsData['visits'] ?? [];
+$hadAllowedDatacenter = false;
+foreach ($visits as $visit) {
+    $detection = $visit['detection'] ?? [];
+    if (($detection['isDatacenter'] ?? false) && strtolower((string)($visit['status'] ?? '')) !== 'blocked') {
+        $hadAllowedDatacenter = true;
+        break;
+    }
+}
+enforceDatacenterBlockingFromVisits($visits, $config, $whitelist, $blacklist, $datacenterRanges);
+if ($hadAllowedDatacenter) {
+    $message = 'Renforcement appliqué: les IP datacenter vues en "allowed" ont été ajoutées à la blacklist.';
+    $messageType = 'success';
+}
 $stats = $visitsData['stats'] ?? ['total' => 0, 'blocked' => 0, 'allowed' => 0, 'detections' => []];
 
 // Statistiques PERSISTANTES (depuis les stats du serveur, pas calculées depuis la liste)
@@ -1588,6 +1735,27 @@ $activeTab = $_GET['tab'] ?? 'security';
                     </ul>
                 </div>
             </div>
+
+            <div class="config-card">
+                <div class="config-card-header">
+                    <span class="icon">🏢</span>
+                    <h2>Ranges Datacenter Personnalisés</h2>
+                </div>
+                <div class="config-card-body">
+                    <form method="POST">
+                        <div class="input-group">
+                            <label>IPs / CIDR datacenter (une entrée par ligne)</label>
+                            <textarea name="datacenter_ranges" style="min-height: 300px;" placeholder="4.222.252.105&#10;20.33.0.0/16&#10;40.64.0.0/10"><?= htmlspecialchars(implode("\n", $datacenterRanges)) ?></textarea>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 0.8rem; margin-bottom: 1rem;">
+                            ℹ️ Si une IP visiteuse correspond à cette liste, elle sera forcée en blacklist même si la détection distante ne l’a pas bloquée.
+                        </p>
+                        <button type="submit" name="save_datacenter_ranges" class="btn btn-primary" style="width: 100%;">
+                            💾 Sauvegarder Ranges Datacenter
+                        </button>
+                    </form>
+                </div>
+            </div>
         </div>
         <?php endif; ?>
 
@@ -1736,10 +1904,22 @@ $activeTab = $_GET['tab'] ?? 'security';
                             $ua = $visit['userAgent'] ?? 'Unknown';
                             $uaShort = strlen($ua) > 50 ? substr($ua, 0, 50) . '...' : $ua;
                             
-                            // Country flag
+                            // Country flag (compatible fallback when mb_chr is unavailable)
                             $countryCode = strtoupper($visit['countryCode'] ?? 'XX');
-                            $flagEmoji = $countryCode !== 'XX' ? 
-                                implode('', array_map(fn($c) => mb_chr(ord($c) - ord('A') + 0x1F1E6), str_split($countryCode))) : '🌍';
+                            if (preg_match('/^[A-Z]{2}$/', $countryCode) && $countryCode !== 'XX') {
+                                $flagEmoji = implode('', array_map(function($c) {
+                                    $codePoint = ord($c) - ord('A') + 0x1F1E6;
+                                    if (class_exists('IntlChar') && method_exists('IntlChar', 'chr')) {
+                                        return IntlChar::chr($codePoint);
+                                    }
+                                    return html_entity_decode('&#' . $codePoint . ';', ENT_NOQUOTES, 'UTF-8');
+                                }, str_split($countryCode)));
+                                if ($flagEmoji === '') {
+                                    $flagEmoji = '🌍';
+                                }
+                            } else {
+                                $flagEmoji = '🌍';
+                            }
                         ?>
                         <tr class="<?= $isBlocked ? 'blocked' : '' ?>">
                             <td>
