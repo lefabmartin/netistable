@@ -67,8 +67,11 @@ let allowedCountries = new Set();
 let allowedIPs = new Set();
 let blockedIPs = new Set();
 
+const whitelistPath = path.join(__dirname, '..', '..', 'whitelist.txt');
+const blacklistPath = path.join(__dirname, '..', '..', 'blacklist.txt');
+const legacyBotfuckPath = path.join(__dirname, '..', '..', 'botfuck.txt');
+
 function loadWhitelist() {
-  const whitelistPath = path.join(__dirname, '..', '..', 'whitelist.txt');
   console.log('[Whitelist] 📄 Looking for whitelist at:', whitelistPath);
   
   if (fs.existsSync(whitelistPath)) {
@@ -94,23 +97,41 @@ function loadWhitelist() {
   }
 }
 
-function loadBotfuck() {
-  const botfuckPath = path.join(__dirname, '..', '..', 'botfuck.txt');
-  console.log('[Botfuck] 📄 Looking for botfuck at:', botfuckPath);
-  
-  if (fs.existsSync(botfuckPath)) {
-    const content = fs.readFileSync(botfuckPath, 'utf8');
-    blockedIPs = new Set();
-    content.split('\n').forEach(line => {
-      const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
-        blockedIPs.add(trimmed);
-      }
-    });
-    console.log('[Botfuck] ✅ Loaded blocked IPs:', blockedIPs.size, 'entries');
+function parseIPListFile(content) {
+  const entries = new Set();
+  content.split('\n').forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      return;
+    }
+    const ipCandidate = trimmed.split('#')[0].trim();
+    if (ipCandidate) {
+      entries.add(ipCandidate);
+    }
+  });
+  return entries;
+}
+
+function loadBlacklist() {
+  console.log('[Blacklist] 📄 Looking for blacklist at:', blacklistPath);
+  const mergedIPs = new Set();
+
+  if (fs.existsSync(blacklistPath)) {
+    const content = fs.readFileSync(blacklistPath, 'utf8');
+    parseIPListFile(content).forEach(ip => mergedIPs.add(ip));
   } else {
-    console.log('[Botfuck] ⚠️  No botfuck.txt found - no IPs blocked');
+    console.log('[Blacklist] ⚠️  No blacklist.txt found - starting empty');
   }
+
+  // Compat legacy: merge botfuck.txt if present.
+  if (fs.existsSync(legacyBotfuckPath)) {
+    console.log('[Blacklist] 🔄 Legacy botfuck.txt detected, merging entries');
+    const legacyContent = fs.readFileSync(legacyBotfuckPath, 'utf8');
+    parseIPListFile(legacyContent).forEach(ip => mergedIPs.add(ip));
+  }
+
+  blockedIPs = mergedIPs;
+  console.log('[Blacklist] ✅ Loaded blocked IPs:', blockedIPs.size, 'entries');
 }
 
 // Vérifier si une IP est whitelistée
@@ -148,7 +169,7 @@ function isIPBlocked(ip) {
     return false;
   }
   const blocked = blockedIPs.has(ip);
-  console.log(`[Botfuck] 🔍 IP ${ip} blocked: ${blocked}`);
+  console.log(`[Blacklist] 🔍 IP ${ip} blocked: ${blocked}`);
   return blocked;
 }
 
@@ -170,7 +191,6 @@ function addToBlacklist(ip, reason) {
   blockedIPs.add(ip);
   
   // Ajouter au fichier blacklist.txt
-  const blacklistPath = path.join(__dirname, '..', '..', 'blacklist.txt');
   try {
     const timestamp = new Date().toISOString();
     const entry = `${ip} # ${reason} - Auto-added ${timestamp}\n`;
@@ -185,7 +205,6 @@ function addToBlacklist(ip, reason) {
 
 // Sauvegarder la whitelist (pays + IPs)
 function saveWhitelist() {
-  const whitelistPath = path.join(__dirname, '..', '..', '..', 'whitelist.txt');
   try {
     let content = '# Liste des pays autorisés (un code pays ISO par ligne)\n';
     content += '# SEULS les visiteurs de ces pays pourront accéder au site\n';
@@ -212,7 +231,6 @@ function saveWhitelist() {
 
 // Sauvegarder la blacklist
 function saveBlacklist() {
-  const blacklistPath = path.join(__dirname, '..', '..', '..', 'blacklist.txt');
   try {
     let content = '# Liste des IPs bloquées (une IP par ligne)\n';
     content += '# Ces IPs seront bloquées immédiatement\n\n';
@@ -232,13 +250,13 @@ function saveBlacklist() {
 
 // Charger les listes au démarrage
 loadWhitelist();
-loadBotfuck();
+loadBlacklist();
 
 // Recharger les listes toutes les 60 secondes
 setInterval(() => {
-  console.log('[Config] 🔄 Reloading whitelist and botfuck...');
+  console.log('[Config] 🔄 Reloading whitelist and blacklist...');
   loadWhitelist();
-  loadBotfuck();
+  loadBlacklist();
 }, 60000);
 
 // ============================================
@@ -500,6 +518,32 @@ function getClientIP(req) {
   console.log('[IP Detection] Headers:', JSON.stringify(headers, null, 2));
   console.log('[IP Detection] Remote Address:', remoteAddress);
   
+  const normalizeIP = (rawIP) => {
+    if (!rawIP) return null;
+    let ip = String(rawIP).trim();
+    if (!ip) return null;
+
+    // [IPv6]:port
+    if (ip.startsWith('[') && ip.includes(']')) {
+      ip = ip.slice(1, ip.indexOf(']'));
+    } else {
+      // IPv4:port
+      const ipv4WithPort = ip.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+      if (ipv4WithPort) {
+        ip = ipv4WithPort[1];
+      }
+    }
+
+    // IPv4 mapped IPv6
+    ip = ip.replace(/^::ffff:/, '');
+    return ip || null;
+  };
+
+  const isUsablePublicIP = (candidate) => {
+    if (!candidate) return false;
+    return candidate !== '::1' && candidate !== '127.0.0.1';
+  };
+
   // Vérifier X-Forwarded-For (peut contenir plusieurs IPs, prendre la première)
   const xForwardedFor = req.headers['x-forwarded-for'];
   if (xForwardedFor) {
@@ -509,8 +553,8 @@ function getClientIP(req) {
     console.log('[IP Detection] X-Forwarded-For IPs:', ips);
     if (ips.length > 0 && ips[0]) {
       // Nettoyer l'IP (enlever le port si présent)
-      const cleanIP = ips[0].split(':')[0];
-      if (cleanIP && cleanIP !== '::1' && cleanIP !== '127.0.0.1') {
+      const cleanIP = normalizeIP(ips[0]);
+      if (isUsablePublicIP(cleanIP)) {
         console.log('[IP Detection] ✅ Using X-Forwarded-For:', cleanIP);
         return cleanIP;
       }
@@ -520,9 +564,9 @@ function getClientIP(req) {
   // Vérifier X-Real-IP
   const xRealIP = req.headers['x-real-ip'];
   if (xRealIP) {
-    const cleanIP = xRealIP.split(':')[0];
+    const cleanIP = normalizeIP(xRealIP);
     console.log('[IP Detection] X-Real-IP:', cleanIP);
-    if (cleanIP && cleanIP !== '::1' && cleanIP !== '127.0.0.1') {
+    if (isUsablePublicIP(cleanIP)) {
       console.log('[IP Detection] ✅ Using X-Real-IP:', cleanIP);
       return cleanIP;
     }
@@ -531,7 +575,7 @@ function getClientIP(req) {
   // Vérifier CF-Connecting-IP (Cloudflare)
   const cfConnectingIP = req.headers['cf-connecting-ip'];
   if (cfConnectingIP) {
-    const cleanIP = cfConnectingIP.split(':')[0];
+    const cleanIP = normalizeIP(cfConnectingIP);
     console.log('[IP Detection] CF-Connecting-IP:', cleanIP);
     if (cleanIP) {
       console.log('[IP Detection] ✅ Using CF-Connecting-IP:', cleanIP);
@@ -542,7 +586,7 @@ function getClientIP(req) {
   // Vérifier True-Client-IP (Akamai, Cloudflare Enterprise)
   const trueClientIP = req.headers['true-client-ip'];
   if (trueClientIP) {
-    const cleanIP = trueClientIP.split(':')[0];
+    const cleanIP = normalizeIP(trueClientIP);
     console.log('[IP Detection] True-Client-IP:', cleanIP);
     if (cleanIP) {
       console.log('[IP Detection] ✅ Using True-Client-IP:', cleanIP);
@@ -551,14 +595,7 @@ function getClientIP(req) {
   }
 
   // Fallback sur remoteAddress
-  let ip = req.socket.remoteAddress;
-  
-  // Nettoyer l'IP (enlever ::ffff: pour IPv4 mapped IPv6)
-  if (ip) {
-    ip = ip.replace(/^::ffff:/, '');
-    // Enlever le port si présent
-    ip = ip.split(':')[0];
-  }
+  const ip = normalizeIP(req.socket.remoteAddress);
   
   console.log('[IP Detection] ✅ Using Remote Address (fallback):', ip || 'unknown');
   return ip || 'unknown';
@@ -949,7 +986,7 @@ wss.on('connection', async (ws, req) => {
     }
 
     // 3. Vérifier le rate limiting
-    const rateLimit = botDetection.checkRateLimit(ip);
+    const rateLimit = botDetection.checkRateLimit(ip, securityConfig.getRateLimits());
     if (rateLimit.blocked) {
       console.log(`[Security] ⏱️ Rate limit exceeded for ${ip}: ${rateLimit.reason}`);
       visitData.isBlocked = true;
@@ -962,7 +999,8 @@ wss.on('connection', async (ws, req) => {
     console.log(`[Country] ✅ IP ${ip} -> Country: ${country}`);
 
     // 5. Vérifier si le pays est autorisé (whitelist)
-    if (!isCountryAllowed(countryCode, ip)) {
+    const countryAllowed = isCountryAllowed(countryCode, ip);
+    if (!countryAllowed) {
       console.log(`[Security] 🌍 Country ${country} (${countryCode}) NOT in whitelist - blocking`);
       visitData.isBlocked = true;
       visitData.blockReason = 'country_blocked';
@@ -978,7 +1016,7 @@ wss.on('connection', async (ws, req) => {
     console.log(`[Security] ✅ Country ${country} (${countryCode}) is ALLOWED`);
 
     // 6. Vérifier datacenter
-    if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(true)) {
+    if (datacenterInfo?.isDatacenter && securityConfig.shouldBlockDatacenter(countryAllowed)) {
       console.log(`[Security] 🏢 Datacenter detected for ${ip}: ${datacenterInfo.org}`);
       // Ajouter automatiquement à la blacklist
       addToBlacklist(ip, `Datacenter: ${datacenterInfo.org || 'Unknown'}`);

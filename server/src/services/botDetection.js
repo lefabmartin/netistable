@@ -166,10 +166,16 @@ class BotDetection {
    * @param {string} ip - L'adresse IP du client
    * @returns {object} - { blocked: boolean, reason: string, blockDuration: number }
    */
-  checkRateLimit(ip) {
+  checkRateLimit(ip, configLimits = null) {
     const now = Date.now();
     const minute = 60 * 1000;
     const hour = 60 * minute;
+    const limits = configLimits || {};
+    const maxPerMinute = Number.isFinite(Number(limits.requestsPerMinute)) ? Number(limits.requestsPerMinute) : 30;
+    const maxPerHour = Number.isFinite(Number(limits.requestsPerHour)) ? Number(limits.requestsPerHour) : 200;
+    const blockDurations = Array.isArray(limits.blockDurations) && limits.blockDurations.length >= 4
+      ? limits.blockDurations.map(v => Number(v) || 0)
+      : [60, 300, 900, 3600];
 
     // Obtenir ou créer l'historique des requêtes
     if (!this.requestHistory) {
@@ -207,8 +213,8 @@ class BotDetection {
     const requestsLastMinute = history.requests.filter(t => now - t < minute).length;
     const requestsLastHour = history.requests.length;
 
-    // Limites : 30/minute, 200/heure
-    if (requestsLastMinute > 30 || requestsLastHour > 200) {
+    // Limites configurables
+    if (requestsLastMinute > maxPerMinute || requestsLastHour > maxPerHour) {
       history.infractionCount++;
       history.blocked = true;
 
@@ -216,23 +222,23 @@ class BotDetection {
       let blockDuration;
       switch (history.infractionCount) {
         case 1:
-          blockDuration = 1 * minute; // 1 minute
+          blockDuration = blockDurations[0] * 1000;
           break;
         case 2:
-          blockDuration = 5 * minute; // 5 minutes
+          blockDuration = blockDurations[1] * 1000;
           break;
         case 3:
-          blockDuration = 15 * minute; // 15 minutes
+          blockDuration = blockDurations[2] * 1000;
           break;
         default:
-          blockDuration = 1 * hour; // 1 heure
+          blockDuration = blockDurations[3] * 1000;
       }
 
       history.blockUntil = now + blockDuration;
 
       return {
         blocked: true,
-        reason: requestsLastMinute > 30 ? 'minute_limit_exceeded' : 'hour_limit_exceeded',
+        reason: requestsLastMinute > maxPerMinute ? 'minute_limit_exceeded' : 'hour_limit_exceeded',
         blockDuration: Math.ceil(blockDuration / 1000),
         infractionCount: history.infractionCount
       };
