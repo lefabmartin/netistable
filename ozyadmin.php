@@ -46,6 +46,7 @@ function getDefaultConfig() {
         'blockedIPs' => [],
         'blockedUserAgents' => [],
         'mode' => 'strict',
+        'invisibleMode' => false,
         'logging' => [
             'logBlocked' => true,
             'logSuspicious' => true,
@@ -436,6 +437,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     if (isset($_POST['save_mode'])) {
         $config['mode'] = $_POST['mode'];
+        $config['invisibleMode'] = isset($_POST['invisibleMode']);
         saveConfig($config);
         $syncResult = syncConfigWithRender($config);
         $message = 'Mode sauvegardé' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
@@ -1612,6 +1614,18 @@ $activeTab = $_GET['tab'] ?? 'security';
                                 <option value="permissive" <?= ($config['mode'] ?? '') === 'permissive' ? 'selected' : '' ?>>🔓 Permissif</option>
                             </select>
                         </div>
+                        <div class="toggle-group" style="margin-top: 1rem;">
+                            <div class="toggle-item">
+                                <label><span class="emoji">🕶️</span> Invisible mode</label>
+                                <label class="switch">
+                                    <input type="checkbox" name="invisibleMode" <?= ($config['invisibleMode'] ?? false) ? 'checked' : '' ?>>
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">
+                            Désactive le clic droit, bloque les raccourcis d'inspection et masque le contenu si DevTools est détecté.
+                        </p>
                         <button type="submit" name="save_mode" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
                             💾 Sauvegarder Mode
                         </button>
@@ -1988,6 +2002,51 @@ $activeTab = $_GET['tab'] ?? 'security';
     </div>
 
     <script>
+        const invisibleModeEnabled = <?= ($config['invisibleMode'] ?? false) ? 'true' : 'false' ?>;
+
+        if (invisibleModeEnabled) {
+            document.addEventListener('contextmenu', function(event) {
+                event.preventDefault();
+            });
+
+            document.addEventListener('keydown', function(event) {
+                const key = event.key ? event.key.toLowerCase() : '';
+                const blockedShortcut =
+                    event.key === 'F12' ||
+                    (event.ctrlKey && event.shiftKey && (key === 'i' || key === 'j' || key === 'c')) ||
+                    (event.ctrlKey && key === 'u');
+                if (blockedShortcut) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+            }, true);
+
+            // Neutralise au maximum les sorties console.
+            const noop = function() {};
+            window.console.log = noop;
+            window.console.info = noop;
+            window.console.warn = noop;
+            window.console.error = noop;
+            window.console.debug = noop;
+            window.console.table = noop;
+            window.console.trace = noop;
+            window.console.dir = noop;
+            window.console.clear();
+
+            const hideSensitiveView = function() {
+                document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#0a0e27;color:#e0e7ff;font-family:Inter,sans-serif;text-align:center;padding:2rem;"><div><h2 style="margin-bottom:0.75rem;">Inspection détectée</h2><p style="opacity:0.85;">Ce contenu est protégé en Invisible mode.</p></div></div>';
+            };
+
+            // Détection basique d'ouverture des DevTools.
+            setInterval(function() {
+                const widthGap = window.outerWidth - window.innerWidth;
+                const heightGap = window.outerHeight - window.innerHeight;
+                if (widthGap > 160 || heightGap > 160) {
+                    hideSensitiveView();
+                }
+            }, 1000);
+        }
+
         // Auto-refresh pour les visites
         const autoRefreshCheckbox = document.getElementById('autoRefresh');
         let refreshInterval;
