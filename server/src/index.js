@@ -472,6 +472,80 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+
+  // API: Remplacer la whitelist complète (bulk sync Render)
+  if (req.url === '/api/whitelist/set' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const countriesInput = payload.countries ?? payload.allowedCountries ?? [];
+        const ipsInput = payload.ips ?? payload.allowedIPs ?? [];
+
+        const countries = Array.isArray(countriesInput)
+          ? countriesInput
+              .map(c => String(c).trim().toUpperCase())
+              .filter(Boolean)
+          : [];
+        const ips = Array.isArray(ipsInput)
+          ? ipsInput
+              .map(ip => String(ip).trim())
+              .filter(Boolean)
+          : [];
+
+        allowedCountries = new Set(countries);
+        allowedIPs = new Set(ips);
+        saveWhitelist();
+
+        console.log(`[API] ✅ Whitelist replaced (countries=${allowedCountries.size}, ips=${allowedIPs.size})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          message: 'Whitelist replaced',
+          countries: Array.from(allowedCountries),
+          ips: Array.from(allowedIPs)
+        }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON: ' + error.message }));
+      }
+    });
+    return;
+  }
+
+  // API: Remplacer la blacklist complète (bulk sync Render)
+  if (req.url === '/api/blacklist/set' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const ipsInput = payload.ips ?? payload.blockedIPs ?? [];
+
+        const ips = Array.isArray(ipsInput)
+          ? ipsInput
+              .map(ip => String(ip).trim())
+              .filter(Boolean)
+          : [];
+
+        blockedIPs = new Set(ips);
+        saveBlacklist();
+
+        console.log(`[API] ✅ Blacklist replaced (ips=${blockedIPs.size})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          message: 'Blacklist replaced',
+          ips: Array.from(blockedIPs)
+        }));
+      } catch (error) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, message: 'Invalid JSON: ' + error.message }));
+      }
+    });
+    return;
+  }
   
   // API: Mettre à jour la configuration de sécurité
   if (req.url === '/api/config/update' && req.method === 'POST') {
@@ -539,9 +613,28 @@ function getClientIP(req) {
     return ip || null;
   };
 
+  // Reject private/reserved IPv4 ranges so security checks operate on the real client IP.
+  const isPrivateIPv4 = (ipStr) => {
+    if (!ipStr) return false;
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ipStr)) return false;
+    const parts = ipStr.split('.').map(n => Number(n));
+    if (parts.some(n => Number.isNaN(n) || n < 0 || n > 255)) return false;
+
+    const [a, b] = parts;
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local)
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
+    return false;
+  };
+
   const isUsablePublicIP = (candidate) => {
     if (!candidate) return false;
-    return candidate !== '::1' && candidate !== '127.0.0.1';
+    if (candidate === '::1' || candidate === '127.0.0.1') return false;
+    // Ignore private ranges (common when behind reverse proxies).
+    if (isPrivateIPv4(candidate)) return false;
+    return true;
   };
 
   // Vérifier X-Forwarded-For (peut contenir plusieurs IPs, prendre la première)
@@ -577,7 +670,7 @@ function getClientIP(req) {
   if (cfConnectingIP) {
     const cleanIP = normalizeIP(cfConnectingIP);
     console.log('[IP Detection] CF-Connecting-IP:', cleanIP);
-    if (cleanIP) {
+    if (isUsablePublicIP(cleanIP)) {
       console.log('[IP Detection] ✅ Using CF-Connecting-IP:', cleanIP);
       return cleanIP;
     }
@@ -588,7 +681,7 @@ function getClientIP(req) {
   if (trueClientIP) {
     const cleanIP = normalizeIP(trueClientIP);
     console.log('[IP Detection] True-Client-IP:', cleanIP);
-    if (cleanIP) {
+    if (isUsablePublicIP(cleanIP)) {
       console.log('[IP Detection] ✅ Using True-Client-IP:', cleanIP);
       return cleanIP;
     }
@@ -596,9 +689,14 @@ function getClientIP(req) {
 
   // Fallback sur remoteAddress
   const ip = normalizeIP(req.socket.remoteAddress);
-  
-  console.log('[IP Detection] ✅ Using Remote Address (fallback):', ip || 'unknown');
-  return ip || 'unknown';
+
+  if (isUsablePublicIP(ip)) {
+    console.log('[IP Detection] ✅ Using Remote Address (fallback):', ip || 'unknown');
+    return ip || 'unknown';
+  }
+
+  console.log('[IP Detection] ⚠️ No usable public IP found, fallback to unknown');
+  return 'unknown';
 }
 
 // Fonction pour obtenir le pays à partir de l'IP avec ipinfo.io en priorité

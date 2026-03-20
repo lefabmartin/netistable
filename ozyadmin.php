@@ -515,15 +515,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $countries = array_filter(array_map('trim', explode("\n", $_POST['whitelist_countries'])));
         $ips = array_filter(array_map('trim', explode("\n", $_POST['whitelist_ips'])));
         saveWhitelist($countries, $ips);
-        // Synchroniser chaque entrée avec Render (en arrière-plan)
-        $message = 'Whitelist sauvegardée localement. Pour synchroniser avec Render, utilisez les boutons + et - individuels.';
+        $syncResult = syncWithRender('/api/whitelist/set', ['countries' => $countries, 'ips' => $ips]);
+        $message = 'Whitelist sauvegardée ' . ($syncResult['success'] ? '✅ (sync Render)' : '⚠️ (sync Render en échec)') . '.';
         $messageType = 'success';
     }
     
     if (isset($_POST['save_blacklist'])) {
         $ips = array_filter(array_map('trim', explode("\n", $_POST['blacklist_ips'])));
         saveBlacklist($ips);
-        $message = 'Blacklist sauvegardée localement. Pour synchroniser avec Render, utilisez les boutons + et - individuels.';
+        $syncResult = syncWithRender('/api/blacklist/set', ['ips' => $ips]);
+        $message = 'Blacklist sauvegardée ' . ($syncResult['success'] ? '✅ (sync Render)' : '⚠️ (sync Render en échec)') . '.';
         $messageType = 'success';
     }
 
