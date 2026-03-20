@@ -49,8 +49,11 @@ function getWsClientWrapper() {
     ws.onopen = () => {
       console.log('[wsClientWrapper] WebSocket connected (waiting for welcome message)');
       isConnected = true;
-      reconnectAttempts = 0; // Réinitialiser le compteur de tentatives en cas de succès
-      // Ne pas émettre 'connected' ici - attendre le message 'welcome'
+      // IMPORTANT:
+      // Ne pas reset `reconnectAttempts` ici.
+      // Le serveur peut accepter puis fermer la connexion avant d'envoyer le message `welcome`.
+      // Dans ce cas, on ne doit pas considérer l'essaie comme "réussi".
+      // On reset le compteur uniquement après réception de `welcome`.
     };
 
     ws.onmessage = (event) => {
@@ -63,10 +66,22 @@ function getWsClientWrapper() {
           clientId = data.clientId;
           console.log('[wsClientWrapper] ✅ Welcome message received, clientId:', clientId);
           console.log('[wsClientWrapper] ✅ Emitting connected event now');
+          // Reset après un handshake réellement réussi (réception de `welcome`)
+          reconnectAttempts = 0;
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+          }
           emit('connected');
         } else if (data.type === 'registered') {
           clientId = data.clientId;
           console.log('[wsClientWrapper] ✅ Registered, clientId:', clientId);
+          // Reset aussi au cas où le serveur enchaîne directement sur `registered`
+          reconnectAttempts = 0;
+          if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+          }
           emit('registered', data);
         } else if (data.type === 'clients') {
           emit('clients', data);
