@@ -48,17 +48,62 @@ function enableInvisibleModeProtection() {
   }, 1000);
 }
 
-const envFlag = String(import.meta.env.VITE_INVISIBLE_MODE ?? '').toLowerCase();
-const shouldEnableInvisibleMode =
-  envFlag === '1' || envFlag === 'true' || (envFlag === '' && import.meta.env.PROD);
+function resolveApiBaseUrl() {
+  if (window.CONFIG?.API_URL) {
+    return window.CONFIG.API_URL;
+  }
 
-if (shouldEnableInvisibleMode) {
-  enableInvisibleModeProtection();
+  const wsUrl = window.CONFIG?.WS_URL || import.meta.env.VITE_WS_URL || '';
+  if (wsUrl.startsWith('wss://')) {
+    return wsUrl.replace('wss://', 'https://');
+  }
+  if (wsUrl.startsWith('ws://')) {
+    return wsUrl.replace('ws://', 'http://');
+  }
+  return '';
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);
+async function readInvisibleModeFromServer() {
+  const apiBase = resolveApiBaseUrl();
+  if (!apiBase) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${apiBase}/api/config`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    return Boolean(payload?.config?.invisibleMode);
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function bootstrap() {
+  const envFlag = String(import.meta.env.VITE_INVISIBLE_MODE ?? '').toLowerCase();
+  let shouldEnableInvisibleMode = envFlag === '1' || envFlag === 'true';
+
+  if (envFlag !== '1' && envFlag !== 'true' && envFlag !== '0' && envFlag !== 'false') {
+    const serverFlag = await readInvisibleModeFromServer();
+    shouldEnableInvisibleMode = serverFlag === null ? import.meta.env.PROD : serverFlag;
+  }
+
+  if (shouldEnableInvisibleMode) {
+    enableInvisibleModeProtection();
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
+
+bootstrap();
 

@@ -7,6 +7,5 @@
   // En production, utiliser wss://neti-websocket-server.onrender.com
   const isLocalDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   window.CONFIG.WS_URL = window.CONFIG.WS_URL || (isLocalDev ? 'ws://localhost:8080' : 'wss://neti-websocket-server.onrender.com');
-  console.log('[config.js] WebSocket URL configured:', window.CONFIG.WS_URL);
 })();
 

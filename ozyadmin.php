@@ -443,6 +443,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message = 'Mode sauvegardé' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
         $messageType = 'success';
     }
+
+    if (isset($_POST['save_invisible_mode'])) {
+        $config['invisibleMode'] = isset($_POST['invisibleMode']);
+        saveConfig($config);
+        $syncResult = syncConfigWithRender($config);
+        $message = 'Invisible mode mis à jour' . ($syncResult['success'] ? ' ✅ (synchronisé avec Render)' : ' ⚠️ (local uniquement)');
+        $messageType = 'success';
+    }
     
     if (isset($_POST['save_logging'])) {
         $config['logging']['logBlocked'] = isset($_POST['logBlocked']);
@@ -1442,6 +1450,16 @@ $activeTab = $_GET['tab'] ?? 'security';
                 <p class="admin-subtitle">Security & Anti-Bot Management System</p>
             </div>
             <div style="display: flex; align-items: center; gap: 1rem; position: relative; z-index: 1;">
+                <form method="POST" style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.9rem; border: 1px solid var(--glass-border); border-radius: 12px; background: rgba(0, 0, 0, 0.2);">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-primary); font-size: 0.85rem; font-weight: 600;">
+                        <span>🕶️ Invisible mode</span>
+                        <label class="switch" style="margin: 0;">
+                            <input type="checkbox" name="invisibleMode" <?= ($config['invisibleMode'] ?? false) ? 'checked' : '' ?> onchange="this.form.submit()">
+                            <span class="slider"></span>
+                        </label>
+                    </label>
+                    <input type="hidden" name="save_invisible_mode" value="1">
+                </form>
                 <div style="text-align: right;">
                     <div style="color: var(--neon-green); font-weight: 600;">● Online</div>
                     <div style="color: var(--text-muted); font-size: 0.8rem;"><?= date('H:i:s') ?></div>
@@ -1614,18 +1632,6 @@ $activeTab = $_GET['tab'] ?? 'security';
                                 <option value="permissive" <?= ($config['mode'] ?? '') === 'permissive' ? 'selected' : '' ?>>🔓 Permissif</option>
                             </select>
                         </div>
-                        <div class="toggle-group" style="margin-top: 1rem;">
-                            <div class="toggle-item">
-                                <label><span class="emoji">🕶️</span> Invisible mode</label>
-                                <label class="switch">
-                                    <input type="checkbox" name="invisibleMode" <?= ($config['invisibleMode'] ?? false) ? 'checked' : '' ?>>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                        </div>
-                        <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;">
-                            Désactive le clic droit, bloque les raccourcis d'inspection et masque le contenu si DevTools est détecté.
-                        </p>
                         <button type="submit" name="save_mode" class="btn btn-primary" style="margin-top: 1rem; width: 100%;">
                             💾 Sauvegarder Mode
                         </button>

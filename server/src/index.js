@@ -893,6 +893,7 @@ setInterval(async () => {
 
 // Gestion des connexions WebSocket
 wss.on('connection', async (ws, req) => {
+  try {
   const clientId = generateClientId();
   const ip = getClientIP(req);
   const userAgent = req.headers['user-agent'] || '';
@@ -1234,6 +1235,20 @@ wss.on('connection', async (ws, req) => {
       clientId,
     });
   });
+  } catch (error) {
+    console.error('[Connection] ❌ Unhandled error during WebSocket connection:', error);
+    // Try to notify the client; then close with an explicit close frame.
+    try {
+      ws.send(JSON.stringify({ type: 'error', message: 'Internal server error' }));
+    } catch (e) {
+      // Ignore send errors (socket may be closing/closed)
+    }
+    try {
+      ws.close(1011, 'Internal server error');
+    } catch (e) {
+      // Ignore close errors
+    }
+  }
 });
 
 // Gestion des messages
